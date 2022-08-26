@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "..\\fibremodes"
+		},
+		{
+			"path": "..\\..\\Python_scripts\\GS_generation_of_masks_for_fibre_modes"
+		},
+		{
+			"path": "..\\..\\Python_scripts\\stokes"
+		}
+	],
+	"settings": {}
+}
