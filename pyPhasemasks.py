@@ -16,11 +16,11 @@ Enviroment:
 
 import sys
 
-import pathlib
-p = pathlib.Path(__file__).parent.parent
-path_to_MODULES = p
+#import pathlib
+#p = pathlib.Path(__file__).parent.parent
+#path_to_MODULES = p
 #print(path_to_MODULES)
-sys.path.append(str(path_to_MODULES))
+#sys.path.append(str(path_to_MODULES)) # I do not need to add this add all - But check if something complains
 
 from pylab import *
 import cupy as cp
@@ -105,6 +105,8 @@ class SetupGenericMaskGSenvioment():
         
         #Allocate all the memory to perform the GS
         print("Allocating memory in the GPU")
+        self.cache_gpu = cp.fft.config.get_plan_cache()
+        #self.cache_gpu.set_size(0)
         Modes = cp.asarray(self.LGmodes).astype(cp.complex64) #Modes at the fiber output (already normalized)
         self.Modes1D_bases = cp.reshape(Modes,(Modes.shape[0],-1))
         self.Modes1D_bases_conj = cp.conj(cp.transpose(self.Modes1D_bases)) 
@@ -114,7 +116,6 @@ class SetupGenericMaskGSenvioment():
         self.phase_masks = cp.zeros( (self.maskcount, self.SLM_N, self.SLM_N) , cp.complex64) #Store the masks - Cropped masks in case we extended SLM area
         self.fidelity = cp.zeros(self.maskcount, cp.float64) #Keep track of the fidelity during GS running
         self.efficiency = cp.zeros(self.maskcount, cp.float64) #How much power has been scattered # It should need to be on the GPU
-        self.overlap = cp.zeros(self.maskcount, cp.float64) #Equivalent to fidelity but before power normalization
         self.iteration_convergence = np.zeros(self.maskcount, int32)
         #Do not bother allocating memoery for this is you did not downscale
         if downscale > 1:  
@@ -132,6 +133,9 @@ class SetupGenericMaskGSenvioment():
             specs[key] = item
         message = "GS initialization parameters:" + str(specs)
         return(message)     
+    
+    def clean_gpu_memory(self):
+        cp.get_default_memory_pool().free_all_blocks()  
         
     def setNumberOfMasks(self, count):
         self.maskcount = count
@@ -205,28 +209,35 @@ class SetupGenericMaskGSenvioment():
                 D = cp.fft.fftshift(cp.fft.fft2(cp.fft.fftshift(C))) #Fiber plane
                 D = D / cp.sqrt(cp.sum(cp.absolute(D)**2)) #Fiber plane normalized to 1
                 
-                #Goal checking at the Fiber plane --> Decompose current field, reconstruct and overlap with the target
-                D_1D = cp.reshape(D,-1).astype(cp.complex64) #Reshape the current field at the fiber faced
-                overlap_coefs = cp.matmul(D_1D, ModesH1D) #Modal decomposition of the field - using transpose Conj of the modes
+                #Goal checking at the Fiber plane --> 
+                D_core = D * R0_gpu #1) Get only the region of interest: Where the light is allowed
+                D_core = D_core / cp.sqrt(cp.sum(cp.absolute(D_core)**2)) #2) Force it to be 1
+                D_core_1D = cp.reshape(D_core,-1).astype(cp.complex64) #3) Reshape the current field at the fiber faced normalized to 1
+                overlap_coefs = cp.matmul(D_core_1D, ModesH1D) # 4) Modal decomposition of the field in the core - using transpose Conj of the modes
+                target_coefs = cp.matmul(Target_Mode_1D, ModesH1D) # 5) Modal decompostion of the target
                 
-                recounstruction = cp.matmul(overlap_coefs, Modes1D)
-                recounstruction = cp.divide(recounstruction,cp.sqrt(cp.sum(cp.absolute(recounstruction)**2)))#norm
-                self.fidelity[j] = cp.sum(cp.absolute(cp.multiply(recounstruction,cp.conj(Target_Mode_1D))))#overlap
+                self.fidelity[j] = cp.sum(cp.absolute(cp.multiply(overlap_coefs,cp.conj(target_coefs)))) #Less restrictive condition
+                #self.fidelity[j] = cp.abs(cp.matmul(overlap_coefs, cp.conj(target_coefs)))**2 #Condition by overlap
                 #print(i,self.fidelity[j])
                 if self.fidelity[j] >= self.goal_fidelity:
-                    self.efficiency[j] = w # Mask efficiency respect total power provided into the slm
-                    self.overlap[j] = cp.sum(abs(overlap_coefs)**2) #Mask efficiency respect the target field
+                    #print(cp.abs(cp.matmul(overlap_coefs, cp.conj(target_coefs)))**2)
+                    #Get the real power in the core respect the input
+                    D_1D = cp.reshape(D,-1).astype(cp.complex64) #Reshape the current field at the fiber faced
+                    overlap_coefs = cp.matmul(D_1D, ModesH1D) #Modal decomposition of the field - using transpose Conj of the modes
+                    self.efficiency[j] = cp.sum(abs(overlap_coefs)**2)
                     self.iteration_convergence[j] = i
                     if printting == True:
-                        print('Mask', j,'Done - ','Iteration ',i)
+                        print(f'Mask {j}, Done - Iteration {i} - Efficiency {self.efficiency[j]}')
                         show()
                     break
                 elif i == Max_iterations-1:
-                    self.efficiency[j] = w # Mask efficiency respect total power provided into the slm
-                    self.overlap[j] = cp.sum(abs(overlap_coefs)**2) #Mask efficiency respect the target field
+                    #Get the real power in the core respect the input
+                    D_1D = cp.reshape(D,-1).astype(cp.complex64) #Reshape the current field at the fiber faced
+                    overlap_coefs = cp.matmul(D_1D, ModesH1D) #Modal decomposition of the field - using transpose Conj of the modes
+                    self.efficiency[j] = cp.sum(abs(overlap_coefs)**2)
                     self.iteration_convergence[j] = i
                     if printting == True:
-                        print('Mask', j,'crased - ','Iteration ',i)
+                        print(f'Mask {j}, Done - Iteration {i} - Efficiency {self.efficiency[j]}')
                         show()
                 
                 #Control the ampount of power delivered to the fiber or to the clading:
@@ -369,6 +380,64 @@ class SetupGenericMaskGSenvioment():
             print('MAX spectral distance +-', px_kspace*samples//2, 'um') 
         
         return px_kspace, Xk, Yk
+    
+    @staticmethod
+    def attenuate_mask(efficiency):
+        Mmax = efficiency.max()
+        Mmin = efficiency.min()
+        attenuation = 10*log10(Mmax / Mmin) #Attenuation to apply to the mask with more power
+        AttPolIdx = where(efficiency == Mmax)[0][0] #What pol to attenuate: H = 0, V = 1
+        
+        return(attenuation, AttPolIdx, Mmin)
+    
+
+class BeamShappingAttenuator:
+    def __init__(self):
+        self.patterndiff = zeros(2)
+        self.slmpowdiff = zeros(2)
+    
+    def FindAttenuation(self, SLMpowAv, PatternpowAv):
+        '''
+        It work out where to scatter power in other to get the desired power ratio between pols
+        
+        IN:
+            SLMpowAv (input): array dimension 2 [H, V] --> Power avaliable on each arm of the SLM (each pol) in linear units
+            PatternpowAv (input): array dimension 2 [H, V] --> Power desired on each arm of the SLM in linear units
+        OUT:
+            Attenuation (output): attenuation in dB to be applied
+            Attenuation Index (output): where to apply the attenuation (H or V - 0 or 1)    
+            
+        '''
+        #Make sure they are 0
+        self.patterndiff.fill(0)
+        self.slmpowdiff.fill(0)
+        
+        powdiffpattern, pattIdx = self.power_offset(PatternpowAv)
+        self.patterndiff[pattIdx] = powdiffpattern
+        
+        powdiffslm, slmIdx = self.power_offset(SLMpowAv)
+        self.slmpowdiff[slmIdx] = powdiffslm
+        
+        return self.calcAttenuation(self.slmpowdiff, self.patterndiff)
+            
+    @staticmethod
+    def calcAttenuation(slm, pattern):
+        diff = pattern - slm
+        attout = diff[0] - diff[1]
+        if attout < 0:
+            attidx = 0 # Attenuate H
+        else:
+            attidx = 1 # Attenuate V
+        return(abs(attout), attidx)
+
+    @staticmethod
+    def power_offset(powerSet):
+        Mmax = powerSet.max()
+        Mmin = powerSet.min()
+        powerOffset = 10*log10(Mmax / Mmin) #Offset in dB between set of power
+        Idx = where(powerSet == Mmax)[0][0] #Which element was the largest
+        return(powerOffset, Idx) 
+        
             
         
 if __name__ == '__main__':
@@ -397,6 +466,7 @@ if __name__ == '__main__':
     data = hdf5storage.loadmat(file_to_open) # it loads data as a dictionary
     TargetCoefs = data['coefs'] #Reconstruction of this is my Target at the camera
     #H and V come interleaved
+    
     
     InputCoefs = matmul(TargetCoefs,(transpose(U))) #Backpropgation of the Target towars the input fiber -- NO PANIC - CONJUGATE and TRY AGAIN
     #InputCoefs = TargetCoefs
