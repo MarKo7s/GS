@@ -1,0 +1,32 @@
+# Cursor / editor workspace
+.cursor/
+*.code-workspace
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Test / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generated test reports
+test/unify_test_masks/gs_regression_report.png
+
+# OS
+.DS_Store
+Thumbs.db

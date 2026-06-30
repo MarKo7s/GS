@@ -111,6 +111,7 @@ class SetupGenericMaskGSenvioment():
         self.Modes1D_bases = cp.reshape(Modes,(Modes.shape[0],-1))
         self.Modes1D_bases_conj = cp.conj(cp.transpose(self.Modes1D_bases)) 
         del(Modes)
+        #I should delete self.LGmodes as well I think
         self.mempool.free_all_blocks()
         self.ILLUMINATION_gpu = cp.asarray(self.ILLUMINATION).astype(cp.complex64)
         self.phase_masks = cp.zeros( (self.maskcount, self.SLM_N, self.SLM_N) , cp.complex64) #Store the masks - Cropped masks in case we extended SLM area

@@ -1,0 +1,6 @@
+{
+  "python.defaultInterpreterPath": "C:\\Users\\ModeLabQBI\\anaconda3\\envs\\gs-gpu\\python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.analysis.diagnosticMode": "workspace",
+  "jupyter.kernels.excludePythonEnvironments": []
+}

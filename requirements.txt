@@ -1,0 +1,8 @@
+# GS (Gerchberg-Saxton) — pyPhasemasks.py, modemasks.py, modal_decomposition.ipynb
+# Python >= 3.10; CUDA toolkit 13.x (e.g. 13.2)
+
+# fibremodes from GitHub — [gpu] cupy-cuda13x; [parallel] ipyparallel; [notebooks] matplotlib, jupyter, ipykernel
+# Do not install plain `cupy` alongside this wheel.
+fibremodes[gpu,parallel,notebooks] @ git+https://github.com/MarKo7s/fibremodes.git@v1.0.0
+
+pytest>=8.0
