@@ -15,6 +15,7 @@ class GS:
         if engine_mode not in GS_ENGINE_MODE:
             raise ValueError(f"Unsupported engine mode: {engine_mode}")
         self.engine_mode = engine_mode
+        print('ENGINE MODE SELECTED:', engine_mode)
 
         self.opticalsetup = opticalsetup
         self.masksetup = masksetup
@@ -55,15 +56,48 @@ class GS:
         GAUSSIAN_FILTER = self.filters.gaussianFilter
         #! What to do depending on the engine and selected modes basis
         _selected_mode_basis = opticalsetup.mode_basis #what user provided
-        
+
         if _selected_mode_basis == 'LG':
             if engine_mode == 'fields':
                 modes_array = self.modes.modes_array_all
             elif engine_mode == 'fibremodes':
-                modes_array = self.modes.modes_array #as a fibremodemask generation it is use for checking crosstalk but also as a target field
+                modes_array = self.modes.modes_array_all 
         else:
             modes_array = self.modes.modes_array_all
+
+
+        _half_piramide = False
         
+        #! Get total number of masks
+        if engine_mode == 'fields':
+            
+            numer_masks = options.get('number_masks') or 2
+            mask_idx_array = np.arange(numer_masks)
+            modes_array = self.modes.modes_array_all 
+
+            print('Fields engine mode selected: memory allocation for', numer_masks, 'masks')
+  
+        elif engine_mode == 'fibremodes':
+            if _half_piramide:
+                modes_array = self.modes.modes_array
+            else:
+                modes_array = self.modes.modes_array_all
+
+            modes_range = options.get('mode_range')
+            print('MODES RANGE:', modes_range)
+
+            if modes_range is not None:
+                numer_masks = int(modes_range[1] - modes_range[0] + 1)
+                mask_idx_array = np.arange(modes_range[0], modes_range[1] + 1)
+            else:
+                numer_masks = opticalsetup.MMF_mode_groups*(opticalsetup.MMF_mode_groups+1)//2
+                mask_idx_array = np.arange(numer_masks)
+
+            print('Fibre modes engine mode selected: memory allocation for', numer_masks, 'masks --> number of modes', modes_array.shape[0])
+        
+            
+
+        self._mask_idx_array = mask_idx_array
         modes_index = self.modes.index
         #prepare modes as a 2D array (so modes in 1D actually)
         num_modes = modes_array.shape[0]
@@ -92,22 +126,7 @@ class GS:
         self._cuda_streams = [cp.cuda.stream.Stream() for _ in range(self.cuda_streams_number)]
         self._stream_pending_result = [None] * self.cuda_streams_number #empty list of Nones
 
-        #! Get total number of masks
-        if engine_mode == 'fields':
-            numer_masks = options.get('number_masks') if options.get('number_masks') is not None else 2
-            mask_idx_array = np.arange(numer_masks)
-        elif engine_mode == 'fibremodes':
-            modes_range = options.get('mode_range')
-            if modes_range is not None:
-                numer_masks = modes_range[1] - modes_range[0] + 1
-                mask_idx_array = np.arange(modes_range[0], modes_range[1] + 1)
-            else:
-                numer_masks = opticalsetup.MMF_mode_groups*(opticalsetup.MMF_mode_groups+1)/2
-                mask_idx_array = np.arange(numer_masks)
     
-        self.cpu_memory.register('MASK_IDX_ARRAY', mask_idx_array) # We will pass to the loop
-
-        self.engine_mode = engine_mode
         #TODO: Not implemented yet
         self.cuda_streams = cuda_streams
 
@@ -133,62 +152,78 @@ class GS:
         self._masks_rescaling_properties = {'physical_center': self._mask_center_physical, 'center': self._mask_center, 'crop': self._crop_phase_mask}
 
 
-    def run(self, inpucoefs: np.ndarray, verbose:bool = False):
+    def run(self, inpucoefs: np.ndarray | None = None, verbose:bool = False):
         cp.cuda.Device().synchronize()
         t0 = time.perf_counter()
         
-        #! Based on the input coefficients, reconstruct the target fields in the mode basis
-        input_coefs_gpu = cp.asarray(inpucoefs).astype(cp.complex64) # We asume they are normalized as unit power
-        
         _modes = self.gpu_memory.get('MODES_ARRAY_1D')
-        targetFields = cp.matmul(input_coefs_gpu, _modes) #Reconstruction of the fields as 1D vectors, if they were not normalized is ok because GS loop does it
-
-        fields_dimension = targetFields.shape
-        if len(fields_dimension) == 2:
-            num_target_fields = fields_dimension[0]
-        else:
-            num_target_fields = 1
-            targetFields = targetFields[None,...] #Add a dimension to the target fields, so we can loop over the target fields
-            input_coefs_gpu = input_coefs_gpu[None,...] #same as above, we use them for checking the goal during the GS loop
-
-        #normalize the coeffcients since they are the check and they may not come normalized
-        input_coefs_gpu = input_coefs_gpu / cp.sqrt(cp.sum(cp.absolute(input_coefs_gpu)**2, axis = 1))[:,None]
-            
-        maskcount = self.maskcount
-        
-        #In the case we attempt to calculate more mask that we have memory avaliable.
-        if num_target_fields > maskcount:
-            print(num_target_fields,' target fields has been provided but only there is memory avaliable for', maskcount)
-            num_masks = maskcount
-        else:
-            num_masks = num_target_fields
-
         #! Get the parameters for the GS loop
         _metric = self.masksetup.convergence_metric
         _filtering = self.masksetup.filtering
         _downscaling = True if self.masksetup.downscale > 1 else False
         _goal = self.masksetup.goal_value
         _max_iterations = self.masksetup.MAX_iterations
+        _mask_idx_array = self._mask_idx_array
+        _N = self.slmplane.SLM_PLANE_N
+        maskcount = self.maskcount
+
+        if self.engine_mode == 'fields':
+            if inpucoefs is None:
+                raise ValueError('Input coefficients are required for fields engine mode')
+
+            #! Based on the input coefficients, reconstruct the target fields in the mode basis
+            input_coefs_gpu = cp.asarray(inpucoefs).astype(cp.complex64) # We asume they are normalized as unit power
+            
+            _modes = self.gpu_memory.get('MODES_ARRAY_1D')
+            targetFields = cp.matmul(input_coefs_gpu, _modes) #Reconstruction of the fields as 1D vectors, if they were not normalized is ok because GS loop does it
+
+            fields_dimension = targetFields.shape
+            if len(fields_dimension) == 2:
+                num_target_fields = fields_dimension[0]
+            else:
+                num_target_fields = 1
+                targetFields = targetFields[None,...] #Add a dimension to the target fields, so we can loop over the target fields
+                input_coefs_gpu = input_coefs_gpu[None,...] #same as above, we use them for checking the goal during the GS loop
+
+            #normalize the coeffcients since they are the check and they may not come normalized
+            input_coefs_gpu = input_coefs_gpu / cp.sqrt(cp.sum(cp.absolute(input_coefs_gpu)**2, axis = 1))[:,None]
+                
+            
+            #In the case we attempt to calculate more mask that we have memory avaliable.
+            if num_target_fields > maskcount:
+                print(num_target_fields,' target fields has been provided but only there is memory avaliable for', maskcount)
+                num_masks = maskcount
+            else:
+                num_masks = num_target_fields
+                
+        elif self.engine_mode == 'fibremodes':
+            # In this case we use the mode itself, since in the gpu only they are as 1D just reshape to 2D as before
+            targetFields = _modes # Comes in 1D but let to be reshaped to 2D later for field compatibility
+            num_masks = maskcount # This is fix already and handled at init.
+
 
         #! We need the field in 2D for the GS loop, the check is down via coef in 1D
         #IF there is not enought space crop the target fields as per maskcount
-        targetField_2D = cp.reshape(targetFields[:num_masks,...], (num_masks, self.slmplane.SLM_PLANE_N, self.slmplane.SLM_PLANE_N))
+        targetField_2D = cp.reshape(targetFields[:num_masks,...], (num_masks, _N, _N))
 
         #! Tamo ready:
         n = self.cuda_streams_number
     
-        for i in range(num_masks):
-            
+        for mask_idx, pattern_idx in enumerate(_mask_idx_array):
+            # pattern idx is to target a specific pattern in the field
+            # mask idx is to index into the phase mask array
             stream, cuda_sid = self._harvest_free_stream(n)
 
             with stream:
-
-                _results = self._single_masks_GS_loop(targetField_2D[i,...], 
+                #masks idx used to later index the asynchronos results to the right phase mask ordering
+                #pattern idx is to target a specific pattern in the field in the selected buffer
+                #cuda sid is to select the stream to use for the computation and use tmp memory to store the results
+                _results = self._single_masks_GS_loop(targetField_2D[pattern_idx,...], 
                                                     self._masks_rescaling_properties, 
                                                     metric = _metric, goal = _goal, max_iterations = _max_iterations, 
                                                     filtering = _filtering, downscale = _downscaling,
                                                     cuda_sid = cuda_sid,
-                                                    mask_idx = i,
+                                                    mask_idx = mask_idx,
                                                     verbose=verbose)
 
 
@@ -215,9 +250,9 @@ class GS:
         self.phase_masks[i] = cp.asnumpy(slot['phase_mask'])
         self.efficiency[i] = slot['efficiency']
         self.D_core_coefs[i] = cp.asnumpy(slot['D_core_coefs'])
-        self.convergence_history[i] = slot['convergence']
+        self.convergence_history[i] = cp.asnumpy(slot['convergence'])
         self.iteration_convergence[i] = slot['iteration_convergence']
-        self.efficiency_history[i] = slot['efficiency_history']
+        self.efficiency_history[i] = cp.asnumpy(slot['efficiency_history'])
 
     #! Helper function to allocate a fresh worker on the GPU otherse it waits for a free stream
     #! At the same time we harverst results if finished.
@@ -265,10 +300,11 @@ class GS:
         w = 1 #scatter power weight
         R1 = cp.negative(R0) + 1
 
-        _convergence = np.zeros(max_iterations, dtype=np.float32)
-        _efficiency = np.zeros(max_iterations, dtype=np.float32)
-
+        _convergence = cp.zeros(max_iterations, dtype=cp.float32)
+        _efficiency = cp.zeros(max_iterations, dtype=cp.float32)
+        _goal_gpu = cp.asarray(goal, dtype=cp.float32)
         #! GS loop
+        _convergence_cnt = 1
         for i in range(max_iterations):
             #From SLM plane to Fiber plane
             C = complex_field(B, A)
@@ -294,23 +330,27 @@ class GS:
             _convergence[i] = goal_check #keep track of the goal evolution check
             _efficiency[i] = power_field(D_core_coefs) #keep track of the efficiency evolution
 
-            if goal_check >= goal or i == max_iterations - 1:
+   
+            if i % _convergence_cnt == 0 or i == max_iterations - 1:
+                _did_it_converged = cp.any(goal_check >= _goal_gpu)
 
-                efficiency = power_field(D_core_coefs) #How much power of the total field across cladding + core ended making it into the basis
-                iteration_convergence = i
+                if _did_it_converged.get() or i == max_iterations - 1 :
 
-                #! Check the power distribution
-                _dumping_field = power_field(D * R1)
-                _core_field = power_field(D * R_CORE)
-                _allowed_region_field = power_field(D * R0)
-                _power_delivered_inbetween_region = power_field(D * (R0 - R_CORE)) # Power in between core and dumping region
-                _uncontrolled_field_power = _allowed_region_field - efficiency # Total uncrontrol power in the allowed region
-                _leaked_power = _core_field - efficiency # Uncontrolled power in the core
+                    efficiency = power_field(D_core_coefs) #How much power of the total field across cladding + core ended making it into the basis
+                    iteration_convergence = i
 
-                if verbose:
-                    print(f'- Iteration {i} - Efficiency {efficiency:.2f} - Goal check {goal_check:.2f} \n'
-                          f'    --> Dumping field (%) {_dumping_field * 100:.2f} - Core field (%) {_core_field * 100:.2f} - Uncontrolled leaked power in the core (%) {_leaked_power * 100:.4f}')
-                break
+                    #! Check the power distribution
+                    _dumping_field = power_field(D * R1)
+                    _core_field = power_field(D * R_CORE)
+                    _allowed_region_field = power_field(D * R0)
+                    _power_delivered_inbetween_region = power_field(D * (R0 - R_CORE)) # Power in between core and dumping region
+                    _uncontrolled_field_power = _allowed_region_field - efficiency # Total uncrontrol power in the allowed region
+                    _leaked_power = _core_field - efficiency # Uncontrolled power in the core
+
+                    if verbose:
+                        print(f'- {mask_idx} --> Iteration {i} - Efficiency {efficiency:.2f} - Goal check {goal_check:.2f} \n'
+                            f'    --> Dumping field (%) {_dumping_field * 100:.2f} - Core field (%) {_core_field * 100:.2f} - Uncontrolled leaked power in the core (%) {_leaked_power * 100:.4f}')
+                    break
 
             #Control the ampount of power delivered to the fiber or to the clading:
             #w parameter controls how much light goes to the core and how much goes to the cladding
