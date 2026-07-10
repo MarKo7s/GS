@@ -3,6 +3,7 @@ from toolbox.gs_operators import *
 import numpy as np
 import cupy as cp
 import time
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 GS_ENGINE_MODE = ['fields', 'fibremodes']
 OPTIONS = {'fields': {'number_masks': None},
@@ -152,12 +153,8 @@ class GS:
         self._masks_rescaling_properties = {'physical_center': self._mask_center_physical, 'center': self._mask_center, 'crop': self._crop_phase_mask}
 
 
-    def run(self, inpucoefs: np.ndarray | None = None, verbose:bool = False):
-        cp.cuda.Device().synchronize()
-        t0 = time.perf_counter()
-        
+    def _prepare_run(self, inpucoefs: np.ndarray | None = None):
         _modes = self.gpu_memory.get('MODES_ARRAY_1D')
-        #! Get the parameters for the GS loop
         _metric = self.masksetup.convergence_metric
         _filtering = self.masksetup.filtering
         _downscaling = True if self.masksetup.downscale > 1 else False
@@ -171,78 +168,126 @@ class GS:
             if inpucoefs is None:
                 raise ValueError('Input coefficients are required for fields engine mode')
 
-            #! Based on the input coefficients, reconstruct the target fields in the mode basis
-            input_coefs_gpu = cp.asarray(inpucoefs).astype(cp.complex64) # We asume they are normalized as unit power
-            
+            input_coefs_gpu = cp.asarray(inpucoefs).astype(cp.complex64)
             _modes = self.gpu_memory.get('MODES_ARRAY_1D')
-            targetFields = cp.matmul(input_coefs_gpu, _modes) #Reconstruction of the fields as 1D vectors, if they were not normalized is ok because GS loop does it
+            targetFields = cp.matmul(input_coefs_gpu, _modes)
 
             fields_dimension = targetFields.shape
             if len(fields_dimension) == 2:
                 num_target_fields = fields_dimension[0]
             else:
                 num_target_fields = 1
-                targetFields = targetFields[None,...] #Add a dimension to the target fields, so we can loop over the target fields
-                input_coefs_gpu = input_coefs_gpu[None,...] #same as above, we use them for checking the goal during the GS loop
+                targetFields = targetFields[None, ...]
+                input_coefs_gpu = input_coefs_gpu[None, ...]
 
-            #normalize the coeffcients since they are the check and they may not come normalized
-            input_coefs_gpu = input_coefs_gpu / cp.sqrt(cp.sum(cp.absolute(input_coefs_gpu)**2, axis = 1))[:,None]
-                
-            
-            #In the case we attempt to calculate more mask that we have memory avaliable.
+            input_coefs_gpu = input_coefs_gpu / cp.sqrt(cp.sum(cp.absolute(input_coefs_gpu)**2, axis=1))[:, None]
+
             if num_target_fields > maskcount:
-                print(num_target_fields,' target fields has been provided but only there is memory avaliable for', maskcount)
+                print(num_target_fields, ' target fields has been provided but only there is memory avaliable for', maskcount)
                 num_masks = maskcount
             else:
                 num_masks = num_target_fields
-                
+
         elif self.engine_mode == 'fibremodes':
-            # In this case we use the mode itself, since in the gpu only they are as 1D just reshape to 2D as before
-            targetFields = _modes # Comes in 1D but let to be reshaped to 2D later for field compatibility
-            num_masks = maskcount # This is fix already and handled at init.
+            targetFields = _modes
+            num_masks = maskcount
 
+        targetField_2D = cp.reshape(targetFields[:num_masks, ...], (num_masks, _N, _N))
 
-        #! We need the field in 2D for the GS loop, the check is down via coef in 1D
-        #IF there is not enought space crop the target fields as per maskcount
-        targetField_2D = cp.reshape(targetFields[:num_masks,...], (num_masks, _N, _N))
+        return targetField_2D, num_masks, {
+            'metric': _metric,
+            'filtering': _filtering,
+            'downscaling': _downscaling,
+            'goal': _goal,
+            'max_iterations': _max_iterations,
+            'convergence_check_interval': self.masksetup.convergence_check_interval,
+            'mask_idx_array': _mask_idx_array,
+        }
 
-        #! Tamo ready:
+    def _print_run_summary(self, num_masks: int, t0: float, n_streams: int, verbose: bool):
+        if verbose:
+            elapsed_time = (time.perf_counter() - t0) * 1000
+            print(f'All {num_masks} masks done in {elapsed_time:.1f} ms '
+                  f'({n_streams} streams)')
+
+    def run(self, inpucoefs: np.ndarray | None = None, verbose: bool = False):
+        cp.cuda.Device().synchronize()
+        t0 = time.perf_counter()
+
+        targetField_2D, num_masks, ctx = self._prepare_run(inpucoefs)
         n = self.cuda_streams_number
-    
-        for mask_idx, pattern_idx in enumerate(_mask_idx_array):
-            # pattern idx is to target a specific pattern in the field
-            # mask idx is to index into the phase mask array
+
+        for mask_idx, pattern_idx in enumerate(ctx['mask_idx_array']):
             stream, cuda_sid = self._harvest_free_stream(n)
 
             with stream:
-                #masks idx used to later index the asynchronos results to the right phase mask ordering
-                #pattern idx is to target a specific pattern in the field in the selected buffer
-                #cuda sid is to select the stream to use for the computation and use tmp memory to store the results
-                _results = self._single_masks_GS_loop(targetField_2D[pattern_idx,...], 
-                                                    self._masks_rescaling_properties, 
-                                                    metric = _metric, goal = _goal, max_iterations = _max_iterations, 
-                                                    filtering = _filtering, downscale = _downscaling,
-                                                    cuda_sid = cuda_sid,
-                                                    mask_idx = mask_idx,
-                                                    verbose=verbose)
+                _results = self._single_masks_GS_loop(
+                    targetField_2D[pattern_idx, ...],
+                    self._masks_rescaling_properties,
+                    metric=ctx['metric'],
+                    goal=ctx['goal'],
+                    max_iterations=ctx['max_iterations'],
+                    convergence_check_interval=ctx['convergence_check_interval'],
+                    filtering=ctx['filtering'],
+                    downscale=ctx['downscaling'],
+                    cuda_sid=cuda_sid,
+                    mask_idx=mask_idx,
+                    verbose=verbose,
+                )
 
+            self._stream_pending_result[cuda_sid] = _results
 
-
-            self._stream_pending_result[cuda_sid] = _results #Store the tmp results in the slots pending to be harvested
-
-
-        #! Let all the streams finish and harvest the results
         for sid in range(n):
-            if self._stream_pending_result[sid] is not None: 
+            if self._stream_pending_result[sid] is not None:
                 self._cuda_streams[sid].synchronize()
                 self._store_GS_results_on_cpu(self._stream_pending_result[sid])
                 self._stream_pending_result[sid] = None
 
-        elapsed_time = (time.perf_counter() - t0) * 1000 # Convert to milliseconds
+        self._print_run_summary(num_masks, t0, n, verbose)
 
-        if verbose:
-            print(f'All {num_masks} masks done in {elapsed_time:.1f} ms '
-                f'({n} streams)')
+    def runWithThreadPool(self, inpucoefs: np.ndarray | None = None, verbose: bool = False):
+        cp.cuda.Device().synchronize()
+        t0 = time.perf_counter()
+
+        targetField_2D, num_masks, ctx = self._prepare_run(inpucoefs)
+        n = self.cuda_streams_number
+        mask_jobs = list(enumerate(ctx['mask_idx_array']))
+        job_i = 0
+        in_flight = {}
+        free_sids = list(range(n))
+
+        with ThreadPoolExecutor(max_workers=n) as executor:
+            while job_i < len(mask_jobs) or in_flight:
+                while job_i < len(mask_jobs) and free_sids:
+                    mask_idx, pattern_idx = mask_jobs[job_i]
+                    job_i += 1
+                    cuda_sid = free_sids.pop()
+                    in_flight[cuda_sid] = executor.submit(
+                        self._run_mask_on_stream,
+                        cuda_sid,
+                        targetField_2D[pattern_idx, ...],
+                        mask_idx,
+                        ctx['metric'],
+                        ctx['goal'],
+                        ctx['max_iterations'],
+                        ctx['convergence_check_interval'],
+                        ctx['filtering'],
+                        ctx['downscaling'],
+                        verbose,
+                    )
+
+                if not in_flight:
+                    break
+
+                done, _ = wait(in_flight.values(), return_when=FIRST_COMPLETED)
+                for fut in done:
+                    cuda_sid = next(sid for sid, f in in_flight.items() if f is fut)
+                    del in_flight[cuda_sid]
+                    self._cuda_streams[cuda_sid].synchronize()
+                    self._store_GS_results_on_cpu(fut.result())
+                    free_sids.append(cuda_sid)
+
+        self._print_run_summary(num_masks, t0, n, verbose)
 
     #! Helper function to move tmp results from a stream to the cpu memory (final buffer results)
     def _store_GS_results_on_cpu(self, slot: dict):
@@ -276,9 +321,28 @@ class GS:
 
         return self._cuda_streams[cuda_sid], cuda_sid
 
+    def _run_mask_on_stream(self, cuda_sid, target_field_gpu, mask_idx, metric, goal,
+                            max_iterations, convergence_check_interval, filtering, downscale, verbose):
+        stream = self._cuda_streams[cuda_sid]
+        with stream:
+            return self._single_masks_GS_loop(
+                target_field_gpu,
+                self._masks_rescaling_properties,
+                metric=metric,
+                goal=goal,
+                max_iterations=max_iterations,
+                convergence_check_interval=convergence_check_interval,
+                filtering=filtering,
+                downscale=downscale,
+                cuda_sid=cuda_sid,
+                mask_idx=mask_idx,
+                verbose=verbose,
+            )
+
     def _single_masks_GS_loop(self, target_field_gpu: cp.ndarray,  masks_rescaling_properties: dict = None,
                             target_field_coefs_gpu: cp.ndarray | None = None, 
-                            metric:str = 'overlap', goal:float = 0.99, max_iterations: int = 300, filtering: bool = False, 
+                            metric:str = 'overlap', goal:float = 0.99, max_iterations: int = 300,
+                            convergence_check_interval: int = 1, filtering: bool = False, 
                             downscale:bool = False,
                             cuda_sid:int = 0,
                             mask_idx:int = 0,
@@ -303,8 +367,8 @@ class GS:
         _convergence = cp.zeros(max_iterations, dtype=cp.float32)
         _efficiency = cp.zeros(max_iterations, dtype=cp.float32)
         _goal_gpu = cp.asarray(goal, dtype=cp.float32)
+        _convergence_cnt = max(1, int(convergence_check_interval))
         #! GS loop
-        _convergence_cnt = 1
         for i in range(max_iterations):
             #From SLM plane to Fiber plane
             C = complex_field(B, A)

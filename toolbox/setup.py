@@ -58,7 +58,7 @@ class GS_mask_setup:
     slm_plane and GS engines.
     """
 
-    def __init__(self, num_masks = None, convergence_metric = 'overlap', goal_value = 0.99,
+    def __init__(self, num_masks = None, convergence_metric = 'overlap', goal_value = 0.99, convergence_check_interval = 1,
                     downscale=1, upsample=0, MAX_iterations=300, filtering:bool = False,
                     filtering_factor=2, filtering_mask_radius_factor=4):
      
@@ -67,6 +67,7 @@ class GS_mask_setup:
         if convergence_metric not in COVERGENCE_METRIC:
             raise ValueError(f"Unsupported convergence metric: {convergence_metric}")
         self.goal_value = goal_value
+        self.convergence_check_interval = convergence_check_interval
         self.downscale = downscale
         self.upsample = upsample
         self.MAX_iterations = MAX_iterations
