@@ -174,7 +174,7 @@ def Mask_Modes_GS_gpu( wavelength , f_SMF , f_MMF , MMF_d, pixel_size ,
 
             #Goal checking at the Fiber plane --> Probably should be better to check this at SLM where resolution is better
             D_1D = cp.reshape(D,-1).astype(cp.complex64) # This is my mode at the SLM (abs(Gaussian) + angle(Best one))
-            FMatrix[j,:] = cp.matmul(D_1D,Modes1D_bases)
+            FMatrix[j,:] = cp.matmul(D_1D, Modes1D_bases)
             overlap_w = FMatrix[j,:]
             P_goal = cp.absolute(overlap_w[j])**2
             crosstalk = cp.sum(cp.absolute(overlap_w)**2) - P_goal
@@ -192,10 +192,10 @@ def Mask_Modes_GS_gpu( wavelength , f_SMF , f_MMF , MMF_d, pixel_size ,
                 similarity[j] = P_goal
                 print('Mode', j, 'crased - ', 'Iteration ', i)
                 show()
-            cp.cuda.Stream.null.synchronize()
+          
         computed_GS = cp.absolute(INPUT_BEAM_gpu) * cp.exp(1j*cp.angle(C)) #INPUT ILLUMINATION + computed mask phase
         #computed_GS = cp.absolute(SLM_Target_Mode) * cp.exp(1j*cp.angle(C)) #Target Mode at the SLM + computed mask phase
-        cp.cuda.Stream.null.synchronize()
+        
         if completeSet:
             phase_mask_gpu[counter,...] = (computed_GS[c-samples_slm//2:c+samples_slm//2,c-samples_slm//2:c+samples_slm//2])
             counter+=1

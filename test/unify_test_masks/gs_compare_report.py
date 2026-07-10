@@ -71,7 +71,7 @@ def format_comparison_report(
 ) -> str:
     lines = [
         "",
-        "GS mask regression — reference vs test",
+        "GS mask regression - reference vs test",
         "=" * 72,
         f"{'Mask':<22} {'Metric':<14} {'Reference':>12} {'Test':>12} {'Diff':>10}",
         "-" * 72,
@@ -100,7 +100,7 @@ def format_comparison_report(
         )
         lines.append("-" * 72)
 
-    lines.append(f"{'Phase mask':<22} {'max |Δφ|':<14} {'match':>12}")
+    lines.append(f"{'Phase mask':<22} {'max |dphi|':<14} {'match':>12}")
     lines.append("-" * 72)
     for key in phase_keys:
         label = PHASE_LABELS.get(key, key)

@@ -26,31 +26,7 @@ from pylab import *
 import cupy as cp
 from fibremodes import ModesGen as mg
 #from fibremodes.overlaps import *
-
-
-###################### FUTURE REFACTORING - USING COMPOSITION ############################
-# I was thinking to create a object that contains all parameters of the set up. 
-# Init this object can be done using json dictionary or manually
-# Use the instance of that object to Init the proper GS object
-class GS_gpu_workpack:
-    def __init__(self, **kargs):
-        pass
-
-class calculate_slm_plane:
-    pass
         
-class calculate_k_space_plane:
-    pass
-
-class calculate_Illumination:
-    pass
-
-class calculate_filters:
-    pass
-
-class allocate_GPU_memory:
-    pass
-
 ###################### FUTURE REFACTORING - USING COMPOSITION ############################
 
 class SetupGenericMaskGSenvioment():
@@ -146,7 +122,7 @@ class SetupGenericMaskGSenvioment():
         
         input_coefs_gpu = cp.asarray(inputcoefs).astype(cp.complex64)
         targetFields = cp.matmul(input_coefs_gpu, self.Modes1D_bases) #Reconstruction of the fields as 1D vectors
-        self.calMasksFromField_gpu(targetFields, rescale = rescale, printting = printting)
+        self.calMasksFromField_gpu(targetFields, rescale = rescale, filter = filter, printting = printting)
         
         return 1
     
@@ -183,12 +159,7 @@ class SetupGenericMaskGSenvioment():
         #Rescaling
         c2 = self.masksize//2 # Real dimensions
   
-        #Gaussian filter check
-        if filter == None:
-            filter_ON = False
-        else:
-            filter_ON = True
-            filter_mod_gpu = self.gaussianFilter_gpu
+    
         #filter
         R0_gpu = self.R0_gpu
                 
@@ -204,6 +175,7 @@ class SetupGenericMaskGSenvioment():
             B = ILLUMINATION # Constant
             overlap_coefs = cp.zeros(self.modescount, cp.complex64) #reset every time 
             w = 1 #scatter power weight
+            R1 = cp.negative(R0_gpu) + 1
             #Modified GS  
             for i in range (Max_iterations):
                 C = cp.multiply(cp.absolute(B), cp.exp(1j*cp.angle(A))) #SLM plane
@@ -226,9 +198,14 @@ class SetupGenericMaskGSenvioment():
                     D_1D = cp.reshape(D,-1).astype(cp.complex64) #Reshape the current field at the fiber faced
                     overlap_coefs = cp.matmul(D_1D, ModesH1D) #Modal decomposition of the field - using transpose Conj of the modes
                     self.efficiency[j] = cp.sum(abs(overlap_coefs)**2)
+
+                    _D_core_coefs = cp.matmul(D_1D, ModesH1D) #Get the coupling into the modes basis
+                    _D_core_coefs = _D_core_coefs / cp.sqrt(cp.sum(cp.absolute(_D_core_coefs)**2)) #Normalize the core coefs to 1
+                    goal_check = cp.abs(cp.vdot(_D_core_coefs, target_coefs))**2 # Overlap, squared, very hard
+
                     self.iteration_convergence[j] = i
                     if printting == True:
-                        print(f'Mask {j}, Done - Iteration {i} - Efficiency {self.efficiency[j]}')
+                        print(f'Mask {j}, Done - Iteration {i} - Efficiency {self.efficiency[j]} - Goal check {goal_check}')
                         show()
                     break
                 elif i == Max_iterations-1:
@@ -245,18 +222,18 @@ class SetupGenericMaskGSenvioment():
                 #w parameter controls how much light goes to the core and how much goes to the clading
                 #Total power always must be 1
                 
-                scatter = ( D * (cp.negative(R0_gpu) + 1) ) #This gets some trash light pattern outside the core
+                scatter = ( D * R1 ) #This gets some trash light pattern outside the core
                 scatter_p = cp.sqrt(cp.sum(cp.absolute(scatter)**2)) #power of the scatter field
                 scatter = (scatter / scatter_p) #Normalize scattered power to unitary power
                 scatter2 = cp.sqrt(1-w) * scatter # decrease w throwing more light outside
                 
-                if filter_ON == True:
-                    scatter = filter_mod_gpu * scatter #Apodization of the scatter field, dont generate super crazy high freq.
+                if filter == True:
+                    scatter = self.gaussianFilter_gpu * scatter #Apodization of the scatter field, dont generate super crazy high freq.
                     scatter_p = cp.sqrt(cp.sum(cp.absolute(scatter)**2)) #Normalize it again to power = 1
                     scatter = scatter/scatter_p
                     scatter2 = cp.sqrt(1-w) * scatter
 
-                E_p = cp.sqrt(cp.sum(cp.absolute((Target_Mode*R0_gpu)**2))) #This is what I want where exactly I want it (inside core)
+                E_p = cp.sqrt(cp.sum(cp.absolute((Target_Mode*R0_gpu))**2)) #This is what I want where exactly I want it (inside core)
                 E1 = Target_Mode * R0_gpu / E_p
                 E2 = E1 * w #Scaled decrease the power there
                 E = E2 + scatter2 #Create the whole field (Core + cladding with power = 1)
