@@ -1,4 +1,4 @@
-from toolbox.setup import *
+from .setup import *
 
 
 

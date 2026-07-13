@@ -59,7 +59,8 @@ class GS_mask_setup:
     """
 
     def __init__(self, num_masks = None, convergence_metric = 'overlap', goal_value = 0.99, convergence_check_interval = 1,
-                    downscale=1, upsample=0, MAX_iterations=300, filtering:bool = False,
+                    downscale=1, upsample=0, MAX_iterations=300,  minium_efficiency=0.1,
+                    filtering:bool = False,
                     filtering_factor=2, filtering_mask_radius_factor=4):
      
         self.num_masks = num_masks
@@ -71,6 +72,7 @@ class GS_mask_setup:
         self.downscale = downscale
         self.upsample = upsample
         self.MAX_iterations = MAX_iterations
+        self.minium_efficiency = minium_efficiency
         self.filtering = filtering
         self.filtering_factor = filtering_factor # Streght to supress high frequencies
         self.filtering_mask_radius_factor = filtering_mask_radius_factor # This is a safety guard in function of the fibre core radius

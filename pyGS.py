@@ -1,5 +1,5 @@
-from toolbox.setup import *
-from toolbox.gs_operators import *
+from .toolbox.setup import *
+from .toolbox.gs_operators import *
 import numpy as np
 import cupy as cp
 import time
@@ -159,6 +159,7 @@ class GS:
         _downscaling = True if self.masksetup.downscale > 1 else False
         _goal = self.masksetup.goal_value
         _max_iterations = self.masksetup.MAX_iterations
+        _minium_efficiency = self.masksetup.minium_efficiency
         _mask_idx_array = self._mask_idx_array
         _N = self.slmplane.SLM_PLANE_N
         maskcount = self.maskcount
@@ -199,6 +200,7 @@ class GS:
             'downscaling': _downscaling,
             'goal': _goal,
             'max_iterations': _max_iterations,
+            'minium_efficiency': _minium_efficiency,
             'convergence_check_interval': self.masksetup.convergence_check_interval,
             'mask_idx_array': _mask_idx_array,
         }
@@ -226,6 +228,7 @@ class GS:
                     metric=ctx['metric'],
                     goal=ctx['goal'],
                     max_iterations=ctx['max_iterations'],
+                    minium_efficiency=ctx['minium_efficiency'],
                     convergence_check_interval=ctx['convergence_check_interval'],
                     filtering=ctx['filtering'],
                     downscale=ctx['downscaling'],
@@ -269,6 +272,7 @@ class GS:
                         ctx['metric'],
                         ctx['goal'],
                         ctx['max_iterations'],
+                        ctx['minium_efficiency'],
                         ctx['convergence_check_interval'],
                         ctx['filtering'],
                         ctx['downscaling'],
@@ -321,7 +325,8 @@ class GS:
         return self._cuda_streams[cuda_sid], cuda_sid
 
     def _run_mask_on_stream(self, cuda_sid, target_field_gpu, mask_idx, metric, goal,
-                            max_iterations, convergence_check_interval, filtering, downscale, verbose):
+                            max_iterations, minium_efficiency, convergence_check_interval,
+                            filtering, downscale, verbose):
         stream = self._cuda_streams[cuda_sid]
         with stream:
             return self._single_masks_GS_loop(
@@ -330,6 +335,7 @@ class GS:
                 metric=metric,
                 goal=goal,
                 max_iterations=max_iterations,
+                minium_efficiency=minium_efficiency,
                 convergence_check_interval=convergence_check_interval,
                 filtering=filtering,
                 downscale=downscale,
@@ -341,6 +347,7 @@ class GS:
     def _single_masks_GS_loop(self, target_field_gpu: cp.ndarray,  masks_rescaling_properties: dict = None,
                             target_field_coefs_gpu: cp.ndarray | None = None, 
                             metric:str = 'overlap', goal:float = 0.99, max_iterations: int = 300,
+                            minium_efficiency:float = 0.1,
                             convergence_check_interval: int = 1, filtering: bool = False, 
                             downscale:bool = False,
                             cuda_sid:int = 0,
@@ -392,26 +399,29 @@ class GS:
 
             _convergence[i] = goal_check #keep track of the goal evolution check
             _efficiency[i] = power_field(D_core_coefs) #keep track of the efficiency evolution
+            # Spatial core power (not modal efficiency) — stop if injection drops too low
+            _core_power = power_field(D * R_CORE)
+            _core_power_too_low = bool((_core_power <= minium_efficiency).get())
 
    
-            if i % _convergence_cnt == 0 or i == max_iterations - 1:
+            if i % _convergence_cnt == 0 or i == max_iterations - 1 or _core_power_too_low:
                 _did_it_converged = cp.any(goal_check >= _goal_gpu)
 
-                if _did_it_converged.get() or i == max_iterations - 1 :
+                if _did_it_converged.get() or i == max_iterations - 1 or _core_power_too_low:
 
-                    efficiency = power_field(D_core_coefs) #How much power of the total field across cladding + core ended making it into the basis
+                    efficiency = _efficiency[i] #How much power of the total field across cladding + core ended making it into the basis
                     iteration_convergence = i
 
                     #! Check the power distribution
                     _dumping_field = power_field(D * R1)
-                    _core_field = power_field(D * R_CORE)
+                    _core_field = _core_power
                     _allowed_region_field = power_field(D * R0)
                     _power_delivered_inbetween_region = power_field(D * (R0 - R_CORE)) # Power in between core and dumping region
                     _uncontrolled_field_power = _allowed_region_field - efficiency # Total uncrontrol power in the allowed region
                     _leaked_power = _core_field - efficiency # Uncontrolled power in the core
 
                     if verbose:
-                        print(f'- {mask_idx} --> Iteration {i} - Efficiency {efficiency:.2f} - Goal check {goal_check:.2f} \n'
+                        print(f'- {mask_idx} --> Iteration {i} - Efficiency {efficiency:.3f} - Goal check {goal_check:.3f} \n'
                             f'    --> Dumping field (%) {_dumping_field * 100:.2f} - Core field (%) {_core_field * 100:.2f} - Uncontrolled leaked power in the core (%) {_leaked_power * 100:.4f}')
                     break
 

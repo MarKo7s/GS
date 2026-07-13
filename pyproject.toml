@@ -1,0 +1,33 @@
+[project]
+name = "gs"
+version = "1.0.0"
+description = "Gerchberg–Saxton phase-mask generation for multimode fibre / SLM control"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=2.0,<2.6",
+  "fibremodes[gpu] @ git+https://github.com/MarKo7s/fibremodes.git@v1.1.1",
+]
+
+[project.optional-dependencies]
+notebooks = [
+  "matplotlib>=3.7",
+  "jupyter>=1.0",
+  "ipykernel>=6.0",
+  "visualization @ git+https://github.com/MarKo7s/visualization.git@v1.0.0",
+]
+test = ["pytest>=8.0"]
+
+[project.urls]
+Repository = "https://github.com/MarKo7s/GS"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"gs" = "."}
+packages = [
+  "gs",
+  "gs.toolbox",
+]
