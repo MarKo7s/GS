@@ -152,7 +152,6 @@ class GS:
 
         self._masks_rescaling_properties = {'physical_center': self._mask_center_physical, 'center': self._mask_center, 'crop': self._crop_phase_mask}
 
-
     def _prepare_run(self, inpucoefs: np.ndarray | None = None):
         _modes = self.gpu_memory.get('MODES_ARRAY_1D')
         _metric = self.masksetup.convergence_metric
