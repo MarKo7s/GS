@@ -29,7 +29,7 @@ class optical_setup:
     mode_basis (str): basis of the modes. Supported: 'LG', 'HG', 'custom'
     smf_in_NA (float): numerical aperture of the SMF input (used for SLM illumination calculation)
     smf_in_diameter (float): diameter of the SMF input in um (used for SLM illumination calculation)
-    W0_slm (narray or None): if illumination profile is provided, it will be used instead of the smf specs provided.
+    W0_slm (narray or None): Custom beam waist in (um). If illumination profile is provided, it will be used instead of the smf specs provided.
     """
 
     def __init__(self, wavelength, fin, fout, masksize, slm_pixel_size, MMF_mfd, MMF_diameter,
@@ -58,7 +58,9 @@ class GS_mask_setup:
     slm_plane and GS engines.
     """
 
-    def __init__(self, num_masks = None, convergence_metric = 'overlap', goal_value = 0.99, convergence_check_interval = 1,
+    def __init__(self, num_masks = None, convergence_metric = 'overlap', goal_value = 0.99, 
+                    convergence_check_interval = 1, 
+                    min_coupling_SNR_dB = 20, # Ratio between target field and remaining power in the region of interest.
                     downscale=1, upsample=0, MAX_iterations=300,  minium_efficiency=0.1,
                     filtering:bool = False,
                     filtering_factor=2, filtering_mask_radius_factor=4):
@@ -73,6 +75,7 @@ class GS_mask_setup:
         self.upsample = upsample
         self.MAX_iterations = MAX_iterations
         self.minium_efficiency = minium_efficiency
+        self.min_coupling_SNR_dB = min_coupling_SNR_dB
         self.filtering = filtering
         self.filtering_factor = filtering_factor # Streght to supress high frequencies
         self.filtering_mask_radius_factor = filtering_mask_radius_factor # This is a safety guard in function of the fibre core radius
@@ -165,25 +168,31 @@ class illumination:
     """
 
     def __init__(self, opticalsetup: optical_setup, slmplane: slm_plane, printting=True):
-        wlength = opticalsetup.wavelength
-        R = slmplane.R
-        AREA = slmplane.SLM_PLANE
+        _wlength = opticalsetup.wavelength
+        self._R = slmplane.R
+        self._AREA = slmplane.SLM_PLANE
         f_in = opticalsetup.fin
         d_smf = opticalsetup.smf_in_diameter
         NA_smf = opticalsetup.smf_in_NA
         slm_W0 = opticalsetup.W0_slm
-        self.ILLUMINATION = self.define_IlluminationBeam(wlength, R, AREA, f_in, d_smf, NA_smf, slm_W0, printting)
+        self.mode = None
+        self._calculated_W0 = None
+        self._opticalsetup = opticalsetup #store a view of the opticalsetup object
+        self.ILLUMINATION, self.mode, self._calculated_W0 = self.define_IlluminationBeam(_wlength, self._R, self._AREA, f_in, d_smf, NA_smf, slm_W0, printting)
+        
 
     @staticmethod
     def define_IlluminationBeam(wlength, R, AREA, f_in, d_smf, NA_smf, slm_W0 = None, printting = True):
         
         if slm_W0 != None:
             w0_slm = slm_W0
+            mode = 'Custom Beam Waist'
         else:
             V_smf = (2*np.pi*NA_smf * d_smf/2) / wlength
             w0_smf = d_smf/2* (0.65 + (1.619/V_smf**1.5) + (2.879/V_smf**6))#2*wlength / (pi*NA_smf)
             zr = np.pi * w0_smf**2 / wlength
             w0_slm = w0_smf * np.sqrt(1 + (f_in/zr)**2)
+            mode = 'Single Mode Fiber'
             
         slm_ill = np.exp(-(R/w0_slm)**2) #exp(-(R/w0_slm)**2)
         slm_ill = slm_ill / np.sqrt(np.sum(np.abs(slm_ill)**2)) #Normalize the illumination beam
@@ -194,42 +203,61 @@ class illumination:
         INPUT_BEAM = AREA
         
         if printting == True:
-            print('Beam waist in the SLM -->',w0_slm *1e-3,' mm' )
+            print('Beam waist in the SLM -->', w0_slm *1e-3,' mm , Calculated via: ', mode )
 
-        return INPUT_BEAM 
+        return INPUT_BEAM, mode, w0_slm
+
+    def update(self, smf_in_NA=None, smf_in_diameter=None, W0_slm=None, printting=True):
+        if smf_in_NA is not None:
+            self._opticalsetup.smf_in_NA = smf_in_NA
+        if smf_in_diameter is not None:
+            self._opticalsetup.smf_in_diameter = smf_in_diameter
+        if W0_slm is not None:
+            self._opticalsetup.W0_slm = W0_slm
+
+        self.ILLUMINATION, self.mode, self._calculated_W0 = self.define_IlluminationBeam(self.opticalsetup.wavelength, self._R, self._AREA, 
+        self._opticalsetup.fin, self._opticalsetup.smf_in_diameter, 
+        self._opticalsetup.smf_in_NA, self._opticalsetup.W0_slm, printting=printting)
 
 
 class modes:
-    """LG mode basis at the fibre plane (CPU numpy arrays). Not yet implemented.
-
-    Will provide LGmodes (M, N, N), index, Modes1D_bases, and Modes1D_bases_conj.
-    LGmodes stays on CPU for mode-mask engine (one slice uploaded per job);
-    1D bases are uploaded to gpu_memory for decomposition / crosstalk checks.
+    """GS engine works on mode basis. This class is used to interface the mode bases.
+    This inclide generation of them. Currently, LG and HG modes. User can provide manually a custom mode basis.
+    For instance when the mode basis comes from a non-analytical solution.
     """
 
     def __init__(self, opticalsetup: optical_setup, slmplane: slm_plane, kspaceplane: k_space_plane):
         basis = opticalsetup.mode_basis
+        self._basis = basis
         if basis == 'LG':
             LGmodesObject = LGmodes(opticalsetup.MMF_mfd, opticalsetup.MMF_mode_groups, slmplane.SLM_PLANE_N, kspaceplane.px_kspace, 
             generateModes = True, wholeSet = True, engine='GPU', multicore=True) #object]
             self.index= LGmodesObject.index
+            self.piramid_scheme = self._calculate_piramid_indexing(self.index)
             self.modes_array_all = LGmodesObject.LGmodesArray__ # Full modes piramid
             self.modes_array = LGmodesObject.LGmodesArray  # Half modes piramid
+            self.total_modes_in_the_basis =  opticalsetup.MMF_mode_groups*( opticalsetup.MMF_mode_groups+1)//2
 
             #delete the mode object to free gpu memory
             del LGmodesObject
             cp.get_default_memory_pool().free_all_blocks()
 
         elif basis == 'HG':
-            HGmodes = makeHGModes(slmplane.SLM_PLANE_N, opticalsetup.MMF_mfd, opticalsetup.MMF_mode_groups)
+            #makeHGmodes expect the beam waist in pixels, not in um
+            w0_px = (opticalsetup.MMF_mfd / 2) / kspaceplane.px_kspace
+            HGmodes = makeHGModes(slmplane.SLM_PLANE_N, w0_px, opticalsetup.MMF_mode_groups)
             self.index= None
+            self.piramid_scheme = None #This means that the mode index matches the piramid index (so it is complete)
             self.modes_array_all = HGmodes
             self.modes_array = None
+            self.total_modes_in_the_basis =  opticalsetup.MMF_mode_groups*( opticalsetup.MMF_mode_groups+1)//2
 
         elif basis == 'custom':
             self.index = None
+            self.piramid_scheme = None
             self.modes_array_all = None
             self.modes_array = None
+            self.total_modes_in_the_basis = None
             print('Custom mode basis selected, the user needs to handle the mode class. Use the set_mode_basis method to set the mode basis.')
 
         else:
@@ -237,6 +265,21 @@ class modes:
 
     def set_mode_basis(self, modes):
         self.modes_array_all = modes
+        self.total_modes_in_the_basis = self.modes_array_all.shape[0]
+
+    @staticmethod
+    def _calculate_piramid_indexing(index_mode):
+        piramid = {}
+        cnt = 0
+        for idx, (n,m) in enumerate(zip(index_mode[0,:],index_mode[1, :])):
+            if m != 0:
+                piramid[idx] = [cnt, cnt+1]
+                cnt += 2
+            else:
+                piramid[idx] = [cnt]
+                cnt += 1
+
+        return piramid
 
 
 class filters:
