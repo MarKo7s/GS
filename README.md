@@ -8,10 +8,9 @@ GPU Gerchberg–Saxton phase-mask generation for multimode fibre injection / SLM
 
 ```
 gs/
-├── pyGS.py              unified GS engine (prefer this)
+├── pyGS.py              unified GS engine
 ├── toolbox/             optical_setup, GS_mask_setup, planes, filters, modes, memory
-├── pyPhasemasks.py      legacy: fields-from-coefs GS
-├── modemasks.py         legacy: LG mode-library masks
+├── legacy/              pyPhasemasks and modemasks (regression tests only)
 ├── test/                notebooks and regression helpers
 ├── scripts/release.py   git-tag release automation
 ├── pyproject.toml       package metadata + version
@@ -23,7 +22,7 @@ gs/
 ```
 fibremodes@v1.1.1  (+ cupy-cuda13x via [gpu])
         ↑
-      gs@v1.0.0
+      gs@v1.1.0
 ```
 
 `gs` pins `fibremodes[gpu]` by git tag in `pyproject.toml`. Installing `gs` pulls fibremodes (LG/HG modes) and CuPy — no manual `sys.path` chaining.
@@ -62,7 +61,7 @@ engine.run(inpucoefs=coefs, verbose=True)
 - `engine_mode`: `'fields'` (targets from modal coefs) or `'fibremodes'` (one mask per mode / range).
 - Stop when overlap reaches `goal_value`, core power falls below `minium_efficiency`, or `MAX_iterations`.
 
-Legacy modules `pyPhasemasks` / `modemasks` remain for older notebooks; prefer `pyGS` for new work.
+`legacy/pyPhasemasks.py` and `legacy/modemasks.py` stay in the tree so regression tests can still call the old generators. New work uses `pyGS`.
 
 ## Canonical imports
 
@@ -78,7 +77,7 @@ from gs.toolbox.setup import optical_setup, GS_mask_setup
 ### From GitHub (tagged release)
 
 ```bash
-pip install "gs @ git+https://github.com/MarKo7s/GS.git@v1.0.0"
+pip install "gs @ git+https://github.com/MarKo7s/GS.git@v1.1.0"
 ```
 
 That resolves the pinned `fibremodes[gpu] @ …@v1.1.1` (and CuPy via that extra).
@@ -87,7 +86,7 @@ Other packages can depend on the same pin in `pyproject.toml`:
 
 ```toml
 dependencies = [
-  "gs @ git+https://github.com/MarKo7s/GS.git@v1.0.0",
+  "gs @ git+https://github.com/MarKo7s/GS.git@v1.1.0",
 ]
 ```
 

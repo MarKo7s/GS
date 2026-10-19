@@ -73,7 +73,7 @@ def run_gs_pipeline():
 
     import cupy as cp
 
-    from GS import pyPhasemasks
+    from GS.legacy import pyPhasemasks
 
     target = load_target()
     masks = pyPhasemasks.SetupGenericMaskGSenvioment(**GS_SETUP_KWARGS)

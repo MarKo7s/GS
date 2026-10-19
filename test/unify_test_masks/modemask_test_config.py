@@ -89,7 +89,7 @@ def run_modemask_pipeline() -> dict[str, np.ndarray | str]:
     """Run modemask GS generation and return masks plus efficiency metadata."""
     ensure_algorithms_on_path()
 
-    from GS import modemasks
+    from GS.legacy import modemasks
 
     raw = modemasks.Mask_Modes_GS_gpu(**MODEMSK_KWARGS)
     masks = _trim_generated_masks(np.asarray(raw["masks"]))

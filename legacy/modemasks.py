@@ -11,7 +11,8 @@ Generates LG mode phase masks library
 import sys
 
 import pathlib
-p = pathlib.Path(__file__).parent.parent
+# File now lives in legacy/; algorithms/ (sibling fibremodes) is three levels up.
+p = pathlib.Path(__file__).resolve().parent.parent.parent
 path_to_fibremodes = p
 #print(path_to_xenics)
 sys.path.append(str(path_to_fibremodes))

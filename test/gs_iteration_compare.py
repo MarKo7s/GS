@@ -11,7 +11,7 @@ GS_DIR = ALGORITHMS / "GS"
 sys.path.insert(0, str(ALGORITHMS))
 sys.path.insert(0, str(GS_DIR))
 
-from GS import pyPhasemasks
+from GS.legacy import pyPhasemasks
 from pyGS import GS
 from toolbox.gs_operators import complex_field, power_field, normalize_field, create_field
 from toolbox.setup import optical_setup, GS_mask_setup
