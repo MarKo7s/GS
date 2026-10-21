@@ -21,8 +21,8 @@ from .utils import DEFAULTS
 
 _FLOATS = (
     ("wavelength", "Wavelength (um)", 0.01, 5.0, 4, 0.0001),
-    ("fin", "fin (mm)", 0.01, 1.0e4, 3, 0.1),
-    ("fout", "fout (mm)", 0.01, 1.0e4, 3, 0.1),
+    ("fin", "fin (mm)", 0.1, 1.0e4, 1, 0.1),
+    ("fout", "fout (mm)", 0.1, 1.0e4, 1, 0.1),
     ("slm_pixel_size", "SLM pixel (um)", 0.1, 100.0, 3, 0.1),
     ("MMF_mfd", "MMF MFD (um)", 0.1, 1.0e4, 3, 0.1),
     ("MMF_diameter", "MMF diameter (um)", 0.1, 1.0e4, 3, 0.1),
@@ -36,7 +36,7 @@ _FLOATS = (
 )
 
 _INTS = (
-    ("masksize", "SLM pixels", 8, 8192),
+    ("masksize", "mask size (px)", 8, 8192),
     ("MMF_mode_groups", "Mode groups", 1, 200),
     ("downscale", "Downscale", 1, 32),
     ("upsample", "Upsample", 0, 16),
@@ -174,13 +174,13 @@ def build_settings_form() -> tuple[QWidget, dict]:
     _add_float(incoming, controls, floats, "smf_in_NA", "SMF NA")
     _add_float(incoming, controls, floats, "smf_in_diameter", "SMF diameter (um)")
     waist = QDoubleSpinBox()
-    waist.setRange(0.0, 1.0e7)
+    waist.setRange(0.0, 1.0e4)
     waist.setDecimals(2)
-    waist.setSingleStep(10.0)
+    waist.setSingleStep(0.1)
     waist.setSpecialValueText("from SMF")
     waist.setValue(0.0)
     waist.setFixedWidth(96)
-    incoming.addRow("Beam waist on SLM (um)", waist)
+    incoming.addRow("Beam waist on SLM (mm)", waist)
     controls["W0_slm"] = waist
 
     outgoing = group("Output")
@@ -193,7 +193,7 @@ def build_settings_form() -> tuple[QWidget, dict]:
     _add_int(outgoing, controls, ints, "MMF_mode_groups", "Mode groups")
 
     slm = group("SLM")
-    _add_int(slm, controls, ints, "masksize", "SLM pixels")
+    _add_int(slm, controls, ints, "masksize", "mask size (px)")
     _add_float(slm, controls, floats, "slm_pixel_size", "SLM pixel (um)")
     _add_int(slm, controls, ints, "downscale", "Downscale")
     _add_int(slm, controls, ints, "upsample", "Upsample")
@@ -205,11 +205,13 @@ def build_settings_form() -> tuple[QWidget, dict]:
     _add_int(convergence, controls, ints, "MAX_iterations", "Max iterations")
 
     filtering_form = group("Filtering")
-    filtering = QCheckBox("Filtering")
+    filtering = QCheckBox("Apply Gaussian Window")
     filtering.setChecked(bool(DEFAULTS["filtering"]))
-    filtering_form.addRow(filtering)
     controls["filtering"] = filtering
-    _add_float(filtering_form, controls, floats, "filtering_factor", "Filtering factor")
+    low, high, decimals, step = floats["filtering_factor"][1:]
+    factor = _float_box("filtering_factor", low, high, decimals, step)
+    controls["filtering_factor"] = factor
+    filtering_form.addRow(filtering, factor)
     _add_float(filtering_form, controls, floats, "filtering_mask_radius_factor", "Forbidden radius factor")
 
     column.addStretch(1)

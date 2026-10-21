@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Grab a GSWidget screenshot for the README (docs/images/gui.png).
+"""Grab README screenshots from a finished fibre-mode library.
 
-Uses an in-memory stand-in for the engine, so this does not build modes or use a GPU.
+Builds a short LG library on the GPU, runs it, then grabs the main window
+and the mask viewport. This uses the engine, not a stand-in.
 """
 
 from __future__ import annotations
@@ -11,128 +12,66 @@ import os
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
-
-import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-OUT_DEFAULT = REPO_ROOT / "docs" / "images" / "gui.png"
+OUT_GUI = REPO_ROOT / "docs" / "images" / "gui.png"
+OUT_VIEWPORT = REPO_ROOT / "docs" / "images" / "mask_viewport.png"
 
 
-def demo_engine():
-    optical = SimpleNamespace(
-        wavelength=0.6328,
-        fin=4.51e3,
-        fout=18.0e3,
-        masksize=512,
-        slm_pixel_size=8.0,
-        MMF_mfd=34.0,
-        MMF_diameter=50.0,
+def run_mode_library():
+    """A few LG modes on the double-clad bench, enough for real curves and fields."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from gs import GS, GS_mask_setup, optical_setup
+
+    optical = optical_setup(
+        wavelength=0.8435,
+        fin=20e3,
+        fout=4.7e3,
+        masksize=960,
+        slm_pixel_size=9.2,
+        MMF_mfd=5.34,
+        MMF_diameter=23,
         MMF_mode_groups=10,
+        W0_slm=2.2e3,
         mode_basis="LG",
-        smf_in_NA=0.1,
-        smf_in_diameter=9.0,
-        W0_slm=None,
     )
-    mask = SimpleNamespace(
+    masksetup = GS_mask_setup(
+        convergence_metric="overlap",
         goal_value=0.99,
-        convergence_check_interval=1,
-        min_coupling_SNR_dB=20.0,
-        downscale=1,
-        upsample=0,
-        MAX_iterations=300,
         minium_efficiency=0.1,
-        filtering=False,
-        filtering_factor=2.0,
-        filtering_mask_radius_factor=4.0,
+        downscale=2,
+        upsample=0,
+        MAX_iterations=80,
+        filtering=True,
+        filtering_factor=0.5,
+        filtering_mask_radius_factor=3,
     )
-    count = 12
-    steps = 8
-    samples = 128
-    length_um = 4000.0
-    axis = (np.arange(samples) - samples // 2) * (length_um / samples)
-    xx, yy = np.meshgrid(axis, axis)
-    waist_um = 800.0
-    illumination = np.exp(-((xx**2 + yy**2) / waist_um**2)).astype(np.float32)
-    engine = SimpleNamespace(
-        engine_mode="fibremodes",
-        opticalsetup=optical,
-        masksetup=mask,
-        _options={"mode_range": None},
-        _GS_ready=True,
-        maskcount=count,
-        illumination=SimpleNamespace(
-            _calculated_W0=waist_um,
-            mode="Single Mode Fiber",
-            ILLUMINATION=illumination,
-        ),
-        efficiency=np.linspace(0.15, 0.85, count).astype(np.float32),
-        iteration_convergence=np.full(count, steps - 1, dtype=np.int32),
-        convergence_history=np.tile(np.linspace(0.2, 0.99, steps), (count, 1)).astype(np.float32),
-        efficiency_history=np.tile(np.linspace(0.1, 0.7, steps), (count, 1)).astype(np.float32),
-        basis_coupling_snr=np.linspace(12.0, 28.0, count).astype(np.float32),
-        dumping_field=np.linspace(0.8, 0.55, count).astype(np.float32),
-        core_field=np.linspace(0.18, 0.4, count).astype(np.float32),
-        leaked_power=np.linspace(-0.02, 0.03, count).astype(np.float32),
-        phase_masks=np.full((count, 8, 8), 0.2, dtype=np.float32),
-        mask_passed=np.array([0, 1, 0, 2, 3, 4, 0, 5, 6, 0, 7, 1], dtype=np.uint8),
-    )
-
-    def get_gs_properties():
-        return {
-            "engine_mode": "fibremodes",
-            "mode_basis": "LG",
-            "gs_ready": True,
-            "maskcount": count,
-            "number_of_modes": 55,
-            "mode_range": None,
-            "slm_size_um": length_um,
-            "artificial_slm_size_um": length_um,
-            "spatial_resolution_per_um": samples / length_um,
-            "image_plane_samples": samples,
-            "useful_slm_samples": samples,
-            "slm_pixel_size_um": 8.0,
-            "pixel_size_fft_um": 0.95,
-            "max_spectral_distance_um": 243.0,
-            "beam_waist_slm_um": waist_um,
-            "beam_waist_mode": "Single Mode Fiber",
-            "core_diameter_um": 50.0,
-            "core_radius_um": 25.0,
-            "forbidden_radius_um": 100.0,
-            "pupil_radius_um": 1600.0,
-            "illumination_outside_pupil_power": 0.0029,
-            "illumination_pow_check_passed": True,
-            "mode_basis_power_outside_pupil": 0.0002,
-            "modes_pow_check_passed": True,
-            "illumination_overlap_support_passed": True,
-            "setup_feasible": True,
-            "NA_MMF_system_max": 0.20,
-            "ill_coverage_rad_px_approx": 55,
-            "modes_coverage_rad_px_approx": 32,
-        }
-
-    engine.get_gs_properties = get_gs_properties
+    engine = GS(optical, masksetup, engine_mode="fibremodes", mode_range=(0, 11))
+    engine.run(verbose=False)
     return engine
 
 
-def build_window():
-    if str(REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(REPO_ROOT))
-    from gs.ui import GSWidget
+def _pump(app, seconds: float) -> None:
+    deadline = time.perf_counter() + seconds
+    while time.perf_counter() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    app.processEvents()
 
-    gui = GSWidget(demo_engine())
-    gui.resize(1200, 980)
-    gui.show()
 
-    def teardown() -> None:
-        gui.close()
-
-    return gui, teardown
+def _save(widget, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pixmap = widget.grab()
+    if pixmap.isNull() or pixmap.width() < 10:
+        raise SystemExit(f"grab() returned an empty pixmap for {path}")
+    if not pixmap.save(str(path), "PNG"):
+        raise SystemExit(f"Failed to write {path}")
+    print(f"Wrote {path}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Capture GUI screenshot for README.")
-    parser.add_argument("-o", "--output", type=Path, default=OUT_DEFAULT)
+    parser = argparse.ArgumentParser(description="Capture GUI screenshots for the README.")
     parser.add_argument("--wait-ms", type=int, default=4000)
     parser.add_argument(
         "--offscreen",
@@ -144,34 +83,39 @@ def main() -> None:
     if args.offscreen:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+    print("Running fibre-mode library...")
+    engine = run_mode_library()
+    print(f"Library finished: {int(engine.maskcount)} masks")
+
     import pyqtgraph as pg
     from PySide6.QtWidgets import QApplication
 
+    from gs.ui import GSWidget
+
     pg.setConfigOptions(useOpenGL=False, antialias=False)
-
     app = QApplication.instance() or QApplication(sys.argv)
-    window, teardown = build_window()
-    window.show()
-    window.raise_()
-    window.activateWindow()
 
-    deadline = time.perf_counter() + max(args.wait_ms, 200) / 1000.0
-    while time.perf_counter() < deadline:
-        app.processEvents()
-        time.sleep(0.02)
-    app.processEvents()
+    gui = GSWidget(engine)
+    gui.resize(1280, 980)
+    gui.show()
+    gui.raise_()
+    gui.activateWindow()
+    _pump(app, max(args.wait_ms, 200) / 1000.0)
+    _save(gui, OUT_GUI)
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    pixmap = window.grab()
-    if pixmap.isNull() or pixmap.width() < 10:
-        teardown()
-        raise SystemExit("grab() returned an empty pixmap")
-    if not pixmap.save(str(args.output), "PNG"):
-        teardown()
-        raise SystemExit(f"Failed to write {args.output}")
+    gui._open_viewport()
+    viewport = gui._viewport
+    viewport.resize(1280, 780)
+    shown = min(3, max(0, int(engine.maskcount) - 1))
+    viewport._slider.setValue(shown)
+    viewport.show()
+    viewport.raise_()
+    viewport.activateWindow()
+    _pump(app, max(args.wait_ms, 200) / 1000.0)
+    _save(viewport, OUT_VIEWPORT)
 
-    teardown()
-    print(f"Wrote {args.output}")
+    viewport.close()
+    gui.close()
     app.quit()
 
 

@@ -398,6 +398,7 @@ class GS:
             "image_plane_samples": samples,
             "useful_slm_samples": int(slm.SLM_N),
             "slm_pixel_size_um": float(optical.slm_pixel_size),
+            "downscale": int(downscale),
             "pixel_size_fft_um": float(self.kspaceplane.px_kspace),
             "max_spectral_distance_um": float(self.kspaceplane.max_spectral_distance_um),
             "beam_waist_slm_um": None if waist is None else float(waist),
@@ -507,7 +508,7 @@ class GS:
 
     def _single_masks_GS_loop(self, target_field_gpu: cp.ndarray,  masks_rescaling_properties: dict = None,
                             target_field_coefs_gpu: cp.ndarray | None = None, 
-                            metric:str = 'overlap', goal:float = 0.99, max_iterations: int = 300,
+                            metric:str = 'overlap', goal:float = 0.99, max_iterations: int = 80,
                             minium_efficiency: float = 0.1,
                             min_coupling_SNR_dB: float = 20,
                             convergence_check_interval: int = 1, filtering: bool = False, 
@@ -660,7 +661,7 @@ class GS:
             #w = w * 0.9
             #sigmoid function weight decay
             w_min = 0.1
-            tau = 80   # transition mostly done by ~80 iterations (tune this, not max_iterations)
+            tau = max_iterations   # transition mostly done by ~80 iterations (tune this, not max_iterations)
             t = min(i / tau, 1.0)
             w = w_min + (1 - w_min) * 0.5 * (1 + np.cos(np.pi * t))
 

@@ -103,7 +103,7 @@ def settings_from_engine(engine) -> dict:
             "full_catalog": mode_range is None,
             "mode_range_start": DEFAULTS["mode_range_start"] if not mode_range else int(mode_range[0]),
             "mode_range_end": DEFAULTS["mode_range_end"] if not mode_range else int(mode_range[1]),
-            "W0_slm": 0.0 if optical.W0_slm is None else float(optical.W0_slm),
+            "W0_slm": 0.0 if optical.W0_slm is None else float(optical.W0_slm) * 1e-3,
             "goal_value": float(mask.goal_value),
             "min_coupling_SNR_dB": float(mask.min_coupling_SNR_dB),
             "downscale": int(mask.downscale),
@@ -128,6 +128,8 @@ def build_engine(settings: dict) -> GS:
     waist = settings.get("W0_slm")
     if waist is None or float(waist) == 0.0:
         waist = None
+    else:
+        waist = float(waist) * 1e3
     optical = optical_setup(
         wavelength=float(settings["wavelength"]),
         fin=float(settings["fin"]) * 1e3,

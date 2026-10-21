@@ -73,12 +73,6 @@ After `run`, read `phase_masks` with shape `(n_masks, masksize, masksize)` in ra
 
 Every run appends to `%PROGRAMDATA%\LAB\Algorithm\GS\logger\gs.log`, whether or not `verbose` is set. The file starts each run with the engine properties. A mask that does not pass is logged as a warning. `verbose=True` still prints the same lines to the console.
 
-The optional window is `from gs.ui import GSWidget` after `pip install gs[gui]`. It can take an existing engine or create one. `GS.run` is called on a worker thread.
-
-<!-- gui-screenshot -->
-![GS GUI](docs/images/gui.png)
-<!-- /gui-screenshot -->
-
 ### Saving a library
 
 `engine.save()` writes `settings.json` and `masks.npz` into one folder. The same settings always use the same folder name, so a later save overwrites that library. When `folder` is omitted, fibre-mode libraries go to `%PROGRAMDATA%\LAB\Algorithm\GS\modes_lib\` and field libraries go to `%PROGRAMDATA%\LAB\Algorithm\GS\field_lib\`. Pass `label` to prefix the folder, for example `label="double_clad"`.
@@ -113,7 +107,7 @@ A custom basis is recorded as `mode_basis: "custom"` plus the label. The mode st
 | `mode_basis` | — | `'LG'` (default), `'HG'`, or `'custom'`. |
 | `smf_in_NA` | — | Numerical aperture of the input SMF. Default `0.1`. Used only to estimate the illumination waist. |
 | `smf_in_diameter` | µm | Input SMF core diameter. Default `9`. |
-| `W0_slm` | µm | Beam waist on the SLM. Leave as `None` to compute it from the SMF, `fin`, and wavelength. Set it to skip that estimate. |
+| `W0_slm` | µm | Beam waist on the SLM. Leave as `None` to compute it from the SMF, `fin`, and wavelength. Set it to skip that estimate. The widget shows this in mm (`2.20` mm is `2200` µm on the engine). |
 
 Illumination is a normalized Gaussian on the SLM. With `W0_slm=None` the waist is the SMF mode propagated through `fin`. A custom basis skips automatic mode generation: pass the stack to `engine.set_mode_basis(modes)` as `(n_modes, N, N)` before `run`.
 
@@ -139,9 +133,7 @@ The largest MMF numerical aperture this bench can support is
 NA_MMF_max = NA_SMF * f_in / f_out
 ```
 
-The setup is feasible only when all three flags pass.
-
-The yellow and blue circles on the SLM-plane plot are the illumination and mode coverage. Each radius is the outermost pixel on the center row where the peak-normalized profile is still above 1%, measured from the array center. The gray circle is the aperture (`pupil_um / 2`). The illumination itself is drawn with the complex-to-RGB map.
+The setup is feasible only when all three flags pass. `get_gs_properties()` reports the two coverage radii in pixels. The window converts them to millimetres or micrometres and draws them; see [User interface](#user-interface).
 
 ### Mask setup
 
@@ -188,6 +180,31 @@ library.run(verbose=True)
 ```
 
 Overlap is the usual score for desired fields. A mode library is often judged by crosstalk; that metric name is reserved on `GS_mask_setup` and the loop still scores overlap.
+
+## User interface
+
+The window is not part of the engine. Install it with the `gui` extra (`pip install gs[gui]`), then open `GSWidget`. Pass an engine you already built, or leave the argument empty and create one from the form. `GS.run` runs on a worker thread.
+
+```python
+from gs.ui import GSWidget
+
+gui = GSWidget(library)
+gui.show()
+```
+
+Focal lengths and the beam waist are shown in millimetres. The engine still stores those lengths in micrometres. The picture below is the window after a fibre-mode library run: feasibility, the SLM-plane illumination, and the efficiency and overlap of each mask.
+
+<!-- gui-screenshot -->
+![GS widget after a mode-library run](docs/images/gui.png)
+<!-- /gui-screenshot -->
+
+On the SLM plane the illumination uses the complex-to-RGB map. The yellow circle is the illumination coverage and the blue circle is the mode coverage, each the outermost center-row pixel still above 1% of the peak. The red dashed circle is the aperture (`pupil_um / 2`). The property panel prints those coverage radii as pixel count times the SLM pitch after downscale (`slm_pixel_size * downscale`).
+
+**Mask viewport** is a second window, opened after the run. One mask at a time: the field on the SLM, the field at the fibre, the fibre intensity, and that mask's overlap, efficiency, and gradient.
+
+<!-- viewport-screenshot -->
+![Mask viewport after a mode-library run](docs/images/mask_viewport.png)
+<!-- /viewport-screenshot -->
 
 ## Canonical imports
 

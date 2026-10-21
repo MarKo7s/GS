@@ -158,12 +158,14 @@ class SLMSketch(QWidget):
         self._waist = pg.PlotCurveItem(pen=pg.mkPen((255, 255, 255), width=1.5))
         self._illumination = pg.PlotCurveItem(pen=pg.mkPen((255, 220, 40), width=1.5))
         self._modes = pg.PlotCurveItem(pen=pg.mkPen((80, 160, 255), width=1.5))
-        self._aperture = pg.PlotCurveItem(pen=pg.mkPen((190, 190, 190), width=1.5))
+        aperture_pen = pg.mkPen((220, 50, 50), width=1.5, style=Qt.PenStyle.CustomDashLine)
+        aperture_pen.setDashPattern([6, 4])
+        self._aperture = pg.PlotCurveItem(pen=aperture_pen)
         self._waist_text = pg.TextItem(color="w", anchor=(0.5, 0.5))
         self._pixel_text = pg.TextItem(color="w", anchor=(0.5, 1.0))
         self._illumination_text = pg.TextItem(color=(255, 220, 40), anchor=(1.0, 0.5))
         self._modes_text = pg.TextItem(color=(80, 160, 255), anchor=(1.0, 0.5))
-        self._aperture_text = pg.TextItem(color=(190, 190, 190), anchor=(0.5, 0.0))
+        self._aperture_text = pg.TextItem(color=(220, 50, 50), anchor=(0.5, 0.0))
         for item in (
             self._image,
             self._aperture,

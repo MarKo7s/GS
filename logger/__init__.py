@@ -34,6 +34,20 @@ def _pixels(value) -> str:
     return f"{float(value):.0f} px"
 
 
+def _coverage_length(radius_px, properties: dict) -> str:
+    """Pixel radius times the SLM pitch after downscale, in mm or µm."""
+    if radius_px is None:
+        return ""
+    pitch = properties.get("slm_pixel_size_um")
+    downscale = properties.get("downscale")
+    if pitch is None or downscale is None:
+        return _pixels(radius_px)
+    length_um = float(radius_px) * float(pitch) * float(downscale)
+    if abs(length_um) >= 1000.0:
+        return f"{length_um * 1e-3:.2f} mm"
+    return f"{length_um:.1f} um"
+
+
 def _feasibility_lines(properties: dict) -> list[str]:
     bar = "--------------------------------"
     if "setup_feasible" not in properties:
@@ -54,8 +68,8 @@ def _feasibility_lines(properties: dict) -> list[str]:
             f"{_passed(properties.get('modes_pow_check_passed'))}"
         ),
         f"Illumination overlap support: {_passed(properties.get('illumination_overlap_support_passed'))}",
-        f"Illumination coverage radius: {_pixels(properties.get('ill_coverage_rad_px_approx'))}",
-        f"Modes coverage radius: {_pixels(properties.get('modes_coverage_rad_px_approx'))}",
+        f"Illumination coverage radius: {_coverage_length(properties.get('ill_coverage_rad_px_approx'), properties)}",
+        f"Modes coverage radius: {_coverage_length(properties.get('modes_coverage_rad_px_approx'), properties)}",
         f"Setup feasible? {_passed(properties.get('setup_feasible'))}",
         f"This system support up to NA_MMF: {na_text}",
         bar,
