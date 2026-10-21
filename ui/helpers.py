@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QSizePolicy,
     QSpinBox,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -35,7 +38,6 @@ _FLOATS = (
 _INTS = (
     ("masksize", "SLM pixels", 8, 8192),
     ("MMF_mode_groups", "Mode groups", 1, 200),
-    ("convergence_check_interval", "Check interval", 1, 1000),
     ("downscale", "Downscale", 1, 32),
     ("upsample", "Upsample", 0, 16),
     ("MAX_iterations", "Max iterations", 1, 5000),
@@ -74,89 +76,158 @@ class EngineWorker(QThread):
         self.succeeded.emit()
 
 
+def _int_box(key: str, low: int, high: int) -> QSpinBox:
+    box = QSpinBox()
+    box.setRange(low, high)
+    box.setValue(int(DEFAULTS[key]))
+    box.setFixedWidth(96)
+    return box
+
+
+def _float_box(key: str, low: float, high: float, decimals: int, step: float) -> QDoubleSpinBox:
+    box = QDoubleSpinBox()
+    box.setRange(low, high)
+    box.setDecimals(decimals)
+    box.setSingleStep(step)
+    box.setValue(float(DEFAULTS[key]))
+    box.setFixedWidth(96)
+    return box
+
+
+def _menu(choices: tuple[str, ...]) -> QComboBox:
+    """A menu that stays as wide as its labels, instead of stretching the column."""
+    box = QComboBox()
+    for name in choices:
+        box.addItem(name, name)
+    box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+    box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    return box
+
+
+def _indexed(specs):
+    return {key: spec for key, *spec in ((item[0], *item[1:]) for item in specs)}
+
+
 def build_settings_form() -> tuple[QWidget, dict]:
     """Settings form. Returned widgets are keyed by the settings dict."""
     host = QWidget()
-    form = QFormLayout(host)
+    column = QVBoxLayout(host)
+    column.setContentsMargins(0, 0, 0, 0)
     controls = {}
+    ints = _indexed(_INTS)
+    floats = _indexed(_FLOATS)
 
-    engine_mode = QComboBox()
-    engine_mode.addItem("fibremodes", "fibremodes")
-    engine_mode.addItem("fields", "fields")
-    form.addRow("Engine mode", engine_mode)
+    top_host = QWidget()
+    top = QFormLayout(top_host)
+    top.setContentsMargins(0, 0, 0, 0)
+    top.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+    engine_mode = _menu(("fibremodes", "fields"))
+    top.addRow("Engine mode", engine_mode)
     controls["engine_mode"] = engine_mode
 
-    basis = QComboBox()
-    for name in ("LG", "HG", "custom"):
-        basis.addItem(name, name)
-    form.addRow("Mode basis", basis)
-    controls["mode_basis"] = basis
-
-    masks = QSpinBox()
-    masks.setRange(1, 100000)
-    masks.setValue(int(DEFAULTS["number_masks"]))
+    masks = _int_box("number_masks", *ints["number_masks"][1:3])
     masks_row = QWidget()
     masks_layout = QHBoxLayout(masks_row)
     masks_layout.setContentsMargins(0, 0, 0, 0)
     masks_layout.addWidget(masks)
-    form.addRow("Number of masks", masks_row)
+    top.addRow("Number of masks", masks_row)
     controls["number_masks"] = masks
     controls["number_masks_row"] = masks_row
-    controls["number_masks_label"] = form.labelForField(masks_row)
+    controls["number_masks_label"] = top.labelForField(masks_row)
 
     start = QSpinBox()
     end = QSpinBox()
     for box, key in ((start, "mode_range_start"), (end, "mode_range_end")):
         box.setRange(0, 100000)
         box.setValue(int(DEFAULTS[key]))
+        box.setFixedWidth(96)
         controls[key] = box
     full = QCheckBox("full catalog")
     full.setChecked(True)
     controls["full_catalog"] = full
+    between = QLabel("to")
+    between.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    between.setFixedWidth(28)
     range_row = QWidget()
     range_layout = QHBoxLayout(range_row)
     range_layout.setContentsMargins(0, 0, 0, 0)
+    range_layout.setSpacing(8)
     range_layout.addWidget(start)
-    range_layout.addWidget(QLabel("to"))
+    range_layout.addWidget(between)
     range_layout.addWidget(end)
     range_layout.addWidget(full)
-    form.addRow("Mode range", range_row)
+    top.addRow("Mode range", range_row)
     controls["mode_range_row"] = range_row
-    controls["mode_range_label"] = form.labelForField(range_row)
+    controls["mode_range_label"] = top.labelForField(range_row)
+    _add_float(top, controls, floats, "wavelength", "Wavelength (um)")
+    column.addWidget(top_host)
 
-    for key, label, low, high in _INTS:
-        if key == "number_masks":
-            continue
-        box = QSpinBox()
-        box.setRange(low, high)
-        box.setValue(int(DEFAULTS[key]))
-        form.addRow(label, box)
-        controls[key] = box
+    def group(title: str) -> QFormLayout:
+        box = QGroupBox(title)
+        form = QFormLayout(box)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        column.addWidget(box)
+        return form
 
-    for key, label, low, high, decimals, step in _FLOATS:
-        box = QDoubleSpinBox()
-        box.setRange(low, high)
-        box.setDecimals(decimals)
-        box.setSingleStep(step)
-        box.setValue(float(DEFAULTS[key]))
-        form.addRow(label, box)
-        controls[key] = box
-
+    incoming = group("Input")
+    _add_float(incoming, controls, floats, "fin", "fin (mm)")
+    _add_float(incoming, controls, floats, "smf_in_NA", "SMF NA")
+    _add_float(incoming, controls, floats, "smf_in_diameter", "SMF diameter (um)")
     waist = QDoubleSpinBox()
     waist.setRange(0.0, 1.0e7)
     waist.setDecimals(2)
     waist.setSingleStep(10.0)
     waist.setSpecialValueText("from SMF")
     waist.setValue(0.0)
-    form.addRow("Beam waist on SLM (um)", waist)
+    waist.setFixedWidth(96)
+    incoming.addRow("Beam waist on SLM (um)", waist)
     controls["W0_slm"] = waist
 
+    outgoing = group("Output")
+    _add_float(outgoing, controls, floats, "fout", "fout (mm)")
+    basis = _menu(("LG", "HG", "custom"))
+    outgoing.addRow("Mode basis", basis)
+    controls["mode_basis"] = basis
+    _add_float(outgoing, controls, floats, "MMF_mfd", "MMF MFD (um)")
+    _add_float(outgoing, controls, floats, "MMF_diameter", "MMF diameter (um)")
+    _add_int(outgoing, controls, ints, "MMF_mode_groups", "Mode groups")
+
+    slm = group("SLM")
+    _add_int(slm, controls, ints, "masksize", "SLM pixels")
+    _add_float(slm, controls, floats, "slm_pixel_size", "SLM pixel (um)")
+    _add_int(slm, controls, ints, "downscale", "Downscale")
+    _add_int(slm, controls, ints, "upsample", "Upsample")
+
+    convergence = group("Convergence")
+    _add_float(convergence, controls, floats, "goal_value", "Overlap goal")
+    _add_float(convergence, controls, floats, "min_coupling_SNR_dB", "Min coupling SNR (dB)")
+    _add_float(convergence, controls, floats, "minium_efficiency", "Minimum efficiency")
+    _add_int(convergence, controls, ints, "MAX_iterations", "Max iterations")
+
+    filtering_form = group("Filtering")
     filtering = QCheckBox("Filtering")
     filtering.setChecked(bool(DEFAULTS["filtering"]))
-    form.addRow(filtering)
+    filtering_form.addRow(filtering)
     controls["filtering"] = filtering
+    _add_float(filtering_form, controls, floats, "filtering_factor", "Filtering factor")
+    _add_float(filtering_form, controls, floats, "filtering_mask_radius_factor", "Forbidden radius factor")
 
+    column.addStretch(1)
     return host, controls
+
+
+def _add_int(form, controls, specs, key: str, label: str):
+    low, high = specs[key][1:3]
+    box = _int_box(key, low, high)
+    form.addRow(label, box)
+    controls[key] = box
+
+
+def _add_float(form, controls, specs, key: str, label: str):
+    low, high, decimals, step = specs[key][1:]
+    box = _float_box(key, low, high, decimals, step)
+    form.addRow(label, box)
+    controls[key] = box
 
 
 def read_settings(controls: dict) -> dict:
@@ -169,7 +240,6 @@ def read_settings(controls: dict) -> dict:
     for key in (
         "masksize",
         "MMF_mode_groups",
-        "convergence_check_interval",
         "downscale",
         "upsample",
         "MAX_iterations",
@@ -217,7 +287,6 @@ def _write_settings(controls: dict, settings: dict) -> None:
     for key in (
         "masksize",
         "MMF_mode_groups",
-        "convergence_check_interval",
         "downscale",
         "upsample",
         "MAX_iterations",

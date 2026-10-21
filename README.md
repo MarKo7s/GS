@@ -117,6 +117,32 @@ A custom basis is recorded as `mode_basis: "custom"` plus the label. The mode st
 
 Illumination is a normalized Gaussian on the SLM. With `W0_slm=None` the waist is the SMF mode propagated through `fin`. A custom basis skips automatic mode generation: pass the stack to `engine.set_mode_basis(modes)` as `(n_modes, N, N)` before `run`.
 
+`pupil_um` is the aperture diameter in front of the SLM, default `7.5e3` µm (7.5 mm). `include_pupil=True` hard-crops the illumination at that disk. That crop is a poor model of the aperture, so `GSWidget` does not expose it. Leave it false and use the feasibility result below.
+
+### Feasibility
+
+`GS` runs `feasibility_setup_check` after setup (and again after `set_mode_basis`). The threshold is `thr = 0.01` (1% of power). `get_gs_properties()` reports the three flags, and the widget prints **PASSED** or **FAIL**.
+
+On the SLM grid, with the illumination normalized to unit power:
+
+- Illumination outside the pupil: power of the beam where the radius is greater than `pupil_um / 2`. Passes when that power is below 1%.
+- Modes outside the aperture: the same disk, applied to the incoherent sum of the mode basis after that sum is normalized to unit power. Passes when that power is below 1%.
+- Illumination support: along the center row, after each profile is normalized to its peak, `min(illumination) > min(modes)`. The illumination has to keep covering the modes out to the edge of the grid. When cladding-guided power is ignored, the same comparison is
+
+```text
+NA_SMF / NA_MMF > f_out / f_in
+```
+
+The largest MMF numerical aperture this bench can support is
+
+```text
+NA_MMF_max = NA_SMF * f_in / f_out
+```
+
+The setup is feasible only when all three flags pass.
+
+The yellow and blue circles on the SLM-plane plot are the illumination and mode coverage. Each radius is the outermost pixel on the center row where the peak-normalized profile is still above 1%, measured from the array center. The gray circle is the aperture (`pupil_um / 2`). The illumination itself is drawn with the complex-to-RGB map.
+
 ### Mask setup
 
 `GS_mask_setup` is scalar. It does not hold fields or coefficients. It sets the sampling of the SLM grid, the stop rule, and how light outside the core is treated.
@@ -127,7 +153,7 @@ Illumination is a normalized Gaussian on the SLM. With `W0_slm=None` the waist i
 | `goal_value` | `0.99` | Overlap the mask must reach. |
 | `min_coupling_SNR_dB` | `20` | Minimum ratio, in dB, of power coupled into the basis over power left in the core but outside the basis. |
 | `minium_efficiency` | `0.1` | Stop that mask if the fraction of power inside the core disk falls to this floor or below. |
-| `convergence_check_interval` | `1` | How many iterations between stop checks. |
+| `convergence_check_interval` | `1` | Stop is checked every iteration. The argument stays so saved libraries still load. It used to space CUDA-stream checks, which are not used, and `GSWidget` does not expose it. |
 | `MAX_iterations` | `300` | Hard cap per mask. |
 | `downscale` | `1` | Integer binning of the SLM. Effective pixel pitch grows by this factor and the physical SLM size stays the same, which cuts the highest spatial frequencies. |
 | `upsample` | `0` | Pad the computed grid by this many extra SLM widths so the fibre-face pixels get finer. |

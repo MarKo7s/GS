@@ -26,6 +26,16 @@ def _as_float(value):
     return float(cp.asnumpy(value))
 
 
+def _left_edge_radius_px(offsets):
+    """Radius of the left edge, already stored as center minus the row index."""
+    if offsets is None:
+        return None
+    offsets = np.asarray(offsets).reshape(-1)
+    if offsets.size == 0:
+        return None
+    return float(offsets[0])
+
+
 class GS:
     def __init__(self, opticalsetup: optical_setup, masksetup: GS_mask_setup, engine_mode: str = 'fields', **options ):
         if engine_mode not in GS_ENGINE_MODE:
@@ -68,8 +78,9 @@ class GS:
     def set_mode_basis(self, modes: np.ndarray):
         self.modes.set_mode_basis(modes)
         self._GS_setup()
+        self._feasibility_check_done = self.feasibility_setup_check()
 
-    def feasibility_setup_check(self, thr: float = 0.01):
+    def feasibility_setup_check(self, thr_pow: float = 0.01):
         """ Check setup can generate targets"""
         # If NA SMF and NA MMF is provided this equivalent to: NA_SMF / NA_MMF >  f_out / f_in (This does not account for power guide by cladding)
         # In general we can estimate it checking the illumination power distribution and the mode basis
@@ -92,14 +103,16 @@ class GS:
         self._illumination_outside_pupil_power = illumination_outside_pupil_power
 
         #Do tails still carry power higher than modes power distrution does?
+        cc = illumination_norm.shape[0]//2
         ill_cut = illumination_norm[illumination_norm.shape[0]//2, :]
         modes_cut = incoherent_sum_modes_SLM[incoherent_sum_modes_SLM.shape[0]//2, :]
 
-        ill_cut_pos0 = where(ill_cut > thr)[0] #Get the position of the first pixel that is above the threshold
+        thr = sqrt(thr_pow)
+        ill_cut_pos0 =  where(ill_cut > thr)[0] #Get the position of the first pixel that is above the threshold
         modes_cut_pos0 = where(modes_cut > thr)[0] #Get the position of the first pixel that is above the threshold
 
-        self._ill_coverage_approx = ill_cut_pos0
-        self._modes_coverage_approx = modes_cut_pos0
+        self._ill_coverage_rad_px_approx = cc - ill_cut_pos0
+        self._modes_coverage_rad_px_approx = cc - modes_cut_pos0
 
         illumination_min = ill_cut.min()
         modes_min = modes_cut.min()
@@ -114,10 +127,10 @@ class GS:
         self._mode_basis_power_outside_pupil = modes_outside_aperture_power
 
         print('--------------------------------')
-        print('Feasibility setup integritycheck:')
-        illumination_pow_check = illumination_outside_pupil_power < thr
+        print('Feasibility setup integrity check:')
+        illumination_pow_check = illumination_outside_pupil_power < thr_pow
         self._illumination_pow_check_passed = illumination_pow_check
-        modes_pow_check = modes_outside_aperture_power < thr
+        modes_pow_check = modes_outside_aperture_power < thr_pow
         self._modes_pow_check_passed = modes_pow_check
         print('Illumination outside pupil power:', f'{illumination_outside_pupil_power * 100:.2f}' , '% -->', illumination_pow_check)
         print('Modes outside aperture power:', f'{modes_outside_aperture_power * 100:.2f}' , '% -->', modes_pow_check)
@@ -372,7 +385,7 @@ class GS:
         if memory is not None and "MODES_ARRAY_1D" in memory:
             number_of_modes = int(memory.get("MODES_ARRAY_1D").shape[0])
         waist = self.illumination._calculated_W0
-        return {
+        properties = {
             "engine_mode": self.engine_mode,
             "mode_basis": optical.mode_basis,
             "gs_ready": bool(self._GS_ready),
@@ -392,7 +405,24 @@ class GS:
             "core_diameter_um": float(optical.MMF_diameter),
             "core_radius_um": float(optical.MMF_diameter) / 2,
             "forbidden_radius_um": float(mask.filtering_mask_radius_factor) * float(optical.MMF_diameter) / 2,
+            "pupil_radius_um": float(optical.pupil_um) / 2.0,
         }
+        if not hasattr(self, "_setup_feasible"):
+            return properties
+        properties.update(
+            {
+                "illumination_outside_pupil_power": float(self._illumination_outside_pupil_power),
+                "illumination_pow_check_passed": bool(self._illumination_pow_check_passed),
+                "mode_basis_power_outside_pupil": float(self._mode_basis_power_outside_pupil),
+                "modes_pow_check_passed": bool(self._modes_pow_check_passed),
+                "illumination_overlap_support_passed": bool(self._illumination_overlap_support_check_passed),
+                "setup_feasible": bool(self._setup_feasible),
+                "NA_MMF_system_max": float(self._NA_MMF_system_max),
+                "ill_coverage_rad_px_approx": _left_edge_radius_px(self._ill_coverage_rad_px_approx),
+                "modes_coverage_rad_px_approx": _left_edge_radius_px(self._modes_coverage_rad_px_approx),
+            }
+        )
+        return properties
 
     def save(self, folder=None, label=None):
         if not self._GS_ready:

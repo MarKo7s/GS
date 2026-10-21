@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Each mask keeps its final basis-to-core SNR, dumping field, core field, and core leakage, and those arrays are written with the library.
 - Every `GS.run` appends to `%PROGRAMDATA%\LAB\Algorithm\GS\logger\gs.log`, including when `verbose` is false. A mask that does not pass is a warning.
 - Optional `GSWidget` (`pip install gs[gui]`) to build, run, save, and inspect an engine without calling `GS.run` on the GUI thread.
+- `get_gs_properties()` includes the feasibility flags (power outside the pupil, mode power outside the aperture, illumination support, and the maximum MMF NA). `GSWidget` shows them and can load a library without copying the saved masks.
 
 ## [1.1.0] - 2026-10-19
 

@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import html
 import time
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -80,6 +82,8 @@ class GSWidget(QWidget):
 
         self._label = QLineEdit()
         self._label.setPlaceholderText("label (optional)")
+        self._upload_masks = QCheckBox("upload masks")
+        self._upload_masks.setChecked(True)
         self._save = QPushButton("Save")
         self._save.clicked.connect(self._save_library)
         self._load = QPushButton("Load")
@@ -92,8 +96,9 @@ class GSWidget(QWidget):
         settings_layout.addWidget(self._create)
         scroll = _SettingsScroll()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(form_host)
-        form_width = form_host.sizeHint().width()
+        form_width = form_host.sizeHint().width() + 16
         scroll.setMinimumWidth(form_width)
         self._settings_box.setMinimumWidth(form_width + 28)
         settings_layout.addWidget(scroll, stretch=1)
@@ -101,6 +106,7 @@ class GSWidget(QWidget):
         self._library_box = QGroupBox("Save / Load")
         library = QHBoxLayout(self._library_box)
         library.addWidget(self._label, stretch=1)
+        library.addWidget(self._upload_masks)
         library.addWidget(self._save)
         library.addWidget(self._load)
 
@@ -114,9 +120,11 @@ class GSWidget(QWidget):
         engine_layout.addLayout(file_row)
         engine_layout.addWidget(self._viewport_button)
 
-        self._properties = QPlainTextEdit()
+        self._properties = QTextEdit()
         self._properties.setReadOnly(True)
-        self._properties.setPlainText("No engine")
+        self._show_properties("No engine")
+        self._feasibility = QLabel("")
+        self._feasibility.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._slm_sketch = SLMSketch()
         self._sketch = FibreSketch()
         self._summary = SummaryPlots()
@@ -126,9 +134,14 @@ class GSWidget(QWidget):
         sketches.addWidget(self._slm_sketch, stretch=1)
         sketches.addWidget(self._sketch, stretch=1)
 
+        plots = QVBoxLayout()
+        plots.setContentsMargins(0, 0, 0, 0)
+        plots.addWidget(self._feasibility)
+        plots.addLayout(sketches, stretch=1)
+
         side = QVBoxLayout()
         side.addWidget(self._properties, stretch=1)
-        side.addLayout(sketches, stretch=1)
+        side.addLayout(plots, stretch=1)
 
         column = QVBoxLayout()
         column.addWidget(self._settings_box, stretch=1)
@@ -139,9 +152,8 @@ class GSWidget(QWidget):
         top.addLayout(column, stretch=0)
         top.addLayout(side, stretch=1)
 
-        self._summary.setMinimumHeight(280)
         layout = QVBoxLayout(self)
-        layout.addLayout(top, stretch=1)
+        layout.addLayout(top, stretch=2)
         layout.addWidget(self._summary, stretch=1)
         self._sync_mode_rows()
         self._sync_buttons()
@@ -232,17 +244,41 @@ class GSWidget(QWidget):
             self._status.setText("Custom basis required before the engine can run")
         self._sync_buttons()
 
+    def _show_properties(self, text: str):
+        color = self._properties.palette().color(self._properties.foregroundRole()).name()
+        escaped = html.escape(text)
+        escaped = escaped.replace("PASSED", '<span style="color:#3caf5a;">PASSED</span>')
+        escaped = escaped.replace("FAIL", '<span style="color:#d23b3b;">FAIL</span>')
+        self._properties.setHtml(
+            f'<pre style="color:{color}; font-family: Consolas, monospace; white-space: pre-wrap;">{escaped}</pre>'
+        )
+
+    def _show_feasibility(self, properties: dict | None):
+        feasible = None if not properties else properties.get("setup_feasible")
+        if feasible is None:
+            self._feasibility.setText("")
+            return
+        if feasible:
+            self._feasibility.setText("SETUP FEASIBLE: PASSED")
+            self._feasibility.setStyleSheet("color: #3caf5a; font-weight: bold;")
+            return
+        self._feasibility.setText("SETUP FEASIBLE: FAIL")
+        self._feasibility.setStyleSheet("color: #d23b3b; font-weight: bold;")
+
     def _refresh_properties(self):
         engine = self._engine
         if engine is None or not hasattr(engine, "get_gs_properties"):
-            self._properties.setPlainText("No engine")
+            self._show_properties("No engine")
+            self._show_feasibility(None)
             self._sketch.set_properties(None)
             self._slm_sketch.set_properties(None)
             return
         properties = engine.get_gs_properties()
-        self._properties.setPlainText(format_properties(properties))
+        illumination = getattr(getattr(engine, "illumination", None), "ILLUMINATION", None)
+        self._show_properties(format_properties(properties))
+        self._show_feasibility(properties)
         self._sketch.set_properties(properties)
-        self._slm_sketch.set_properties(properties)
+        self._slm_sketch.set_properties(properties, illumination)
 
     def _load_coefs_file(self):
         path, _selected = QFileDialog.getOpenFileName(self, "Load field coefs", "", "NumPy (*.npz)")
@@ -337,7 +373,8 @@ class GSWidget(QWidget):
         )
         if not path:
             return
-        self._submit(lambda: load_engine(path), self._on_loaded, "Loading library...")
+        upload = self._upload_masks.isChecked()
+        self._submit(lambda: load_engine(path, upload_masks=upload), self._on_loaded, "Loading library...")
 
     def _on_loaded(self, result):
         engine, restored = result
@@ -364,7 +401,7 @@ class _SettingsScroll(QScrollArea):
     """The form scrolls inside the box. Its full height must not size the window."""
 
     def sizeHint(self):
-        width = 280
+        width = 300
         widget = self.widget()
         if widget is not None:
             width = max(width, widget.sizeHint().width())
@@ -372,7 +409,7 @@ class _SettingsScroll(QScrollArea):
 
     def minimumSizeHint(self):
         widget = self.widget()
-        width = 420
+        width = 440
         if widget is not None:
             width = max(width, widget.minimumSizeHint().width())
         return QSize(width, 80)

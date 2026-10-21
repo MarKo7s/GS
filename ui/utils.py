@@ -76,7 +76,6 @@ DEFAULTS = {
     "smf_in_diameter": 9.0,
     "W0_slm": 0.0,
     "goal_value": 0.99,
-    "convergence_check_interval": 1,
     "min_coupling_SNR_dB": 20.0,
     "downscale": 1,
     "upsample": 0,
@@ -106,7 +105,6 @@ def settings_from_engine(engine) -> dict:
             "mode_range_end": DEFAULTS["mode_range_end"] if not mode_range else int(mode_range[1]),
             "W0_slm": 0.0 if optical.W0_slm is None else float(optical.W0_slm),
             "goal_value": float(mask.goal_value),
-            "convergence_check_interval": int(mask.convergence_check_interval),
             "min_coupling_SNR_dB": float(mask.min_coupling_SNR_dB),
             "downscale": int(mask.downscale),
             "upsample": int(mask.upsample),
@@ -149,7 +147,7 @@ def build_engine(settings: dict) -> GS:
         num_masks=int(settings["number_masks"]) if fields else None,
         convergence_metric="overlap",
         goal_value=float(settings["goal_value"]),
-        convergence_check_interval=int(settings["convergence_check_interval"]),
+        convergence_check_interval=1,
         min_coupling_SNR_dB=float(settings["min_coupling_SNR_dB"]),
         downscale=int(settings["downscale"]),
         upsample=int(settings["upsample"]),
@@ -167,14 +165,18 @@ def build_engine(settings: dict) -> GS:
     return GS(optical, mask, engine_mode="fibremodes", mode_range=mode_range)
 
 
-def load_engine(path):
-    """Rebuild an engine from ``settings.json`` and copy ``masks.npz`` when shapes match.
+def load_engine(path, upload_masks: bool = True):
+    """Rebuild an engine from ``settings.json`` and, by default, copy ``masks.npz``.
 
-    Returns ``(engine, results_restored)``. A custom basis is not in the JSON, so the
-    mask arrays wait on ``engine._pending_masks`` until ``set_mode_basis``.
+    Returns ``(engine, results_restored)``. ``upload_masks=False`` leaves the fresh
+    setup alone: no ``masks.npz`` read and no ``_pending_masks``. A custom basis is
+    not in the JSON, so when masks are uploaded before the engine is ready the arrays
+    wait on ``engine._pending_masks`` until ``set_mode_basis``.
     """
     optical, mask, engine_mode, options = settings_from_json(path)
     engine = GS(optical, mask, engine_mode, **options)
+    if not upload_masks:
+        return engine, False
     folder = Path(path)
     if folder.is_file():
         folder = folder.parent

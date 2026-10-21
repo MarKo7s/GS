@@ -48,6 +48,12 @@ def demo_engine():
     )
     count = 12
     steps = 8
+    samples = 128
+    length_um = 4000.0
+    axis = (np.arange(samples) - samples // 2) * (length_um / samples)
+    xx, yy = np.meshgrid(axis, axis)
+    waist_um = 800.0
+    illumination = np.exp(-((xx**2 + yy**2) / waist_um**2)).astype(np.float32)
     engine = SimpleNamespace(
         engine_mode="fibremodes",
         opticalsetup=optical,
@@ -55,7 +61,11 @@ def demo_engine():
         _options={"mode_range": None},
         _GS_ready=True,
         maskcount=count,
-        illumination=SimpleNamespace(_calculated_W0=2200.0, mode="Custom Beam Waist"),
+        illumination=SimpleNamespace(
+            _calculated_W0=waist_um,
+            mode="Single Mode Fiber",
+            ILLUMINATION=illumination,
+        ),
         efficiency=np.linspace(0.15, 0.85, count).astype(np.float32),
         iteration_convergence=np.full(count, steps - 1, dtype=np.int32),
         convergence_history=np.tile(np.linspace(0.2, 0.99, steps), (count, 1)).astype(np.float32),
@@ -76,19 +86,29 @@ def demo_engine():
             "maskcount": count,
             "number_of_modes": 55,
             "mode_range": None,
-            "slm_size_um": 4096.0,
-            "artificial_slm_size_um": 4096.0,
-            "spatial_resolution_per_um": 512 / 4096,
-            "image_plane_samples": 512,
-            "useful_slm_samples": 512,
+            "slm_size_um": length_um,
+            "artificial_slm_size_um": length_um,
+            "spatial_resolution_per_um": samples / length_um,
+            "image_plane_samples": samples,
+            "useful_slm_samples": samples,
             "slm_pixel_size_um": 8.0,
             "pixel_size_fft_um": 0.95,
             "max_spectral_distance_um": 243.0,
-            "beam_waist_slm_um": 2200.0,
-            "beam_waist_mode": "Custom Beam Waist",
+            "beam_waist_slm_um": waist_um,
+            "beam_waist_mode": "Single Mode Fiber",
             "core_diameter_um": 50.0,
             "core_radius_um": 25.0,
             "forbidden_radius_um": 100.0,
+            "pupil_radius_um": 1600.0,
+            "illumination_outside_pupil_power": 0.0029,
+            "illumination_pow_check_passed": True,
+            "mode_basis_power_outside_pupil": 0.0002,
+            "modes_pow_check_passed": True,
+            "illumination_overlap_support_passed": True,
+            "setup_feasible": True,
+            "NA_MMF_system_max": 0.20,
+            "ill_coverage_rad_px_approx": 55,
+            "modes_coverage_rad_px_approx": 32,
         }
 
     engine.get_gs_properties = get_gs_properties
