@@ -31,6 +31,7 @@ from .utils import (
     read_npz_array,
     settings_from_engine,
 )
+from .schematic import OpticalBench
 from .viewports import FibreSketch, MaskViewport, SLMSketch, SummaryPlots
 
 
@@ -45,7 +46,7 @@ class GSWidget(QWidget):
     def __init__(self, engine=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("GS")
-        self.resize(1200, 860)
+        self.resize(QSize(1285, 1272))
         self._engine = None
         self._coefs = None
         self._results_ready = False
@@ -68,6 +69,8 @@ class GSWidget(QWidget):
         self._controls["engine_mode"].currentIndexChanged.connect(self._sync_mode_rows)
         self._controls["mode_basis"].currentIndexChanged.connect(self._sync_mode_rows)
         self._controls["full_catalog"].toggled.connect(self._sync_mode_rows)
+        for key in ("fin", "fout", "smf_in_NA"):
+            self._controls[key].valueChanged.connect(self._sync_bench)
 
         self._create = QPushButton("Create")
         self._create.clicked.connect(self._create_engine)
@@ -125,6 +128,7 @@ class GSWidget(QWidget):
         self._show_properties("No engine")
         self._feasibility = QLabel("")
         self._feasibility.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._bench = OpticalBench()
         self._slm_sketch = SLMSketch()
         self._sketch = FibreSketch()
         self._summary = SummaryPlots()
@@ -137,6 +141,7 @@ class GSWidget(QWidget):
         plots = QVBoxLayout()
         plots.setContentsMargins(0, 0, 0, 0)
         plots.addWidget(self._feasibility)
+        plots.addWidget(self._bench)
         plots.addLayout(sketches, stretch=1)
 
         side = QVBoxLayout()
@@ -156,6 +161,7 @@ class GSWidget(QWidget):
         layout.addLayout(top, stretch=2)
         layout.addWidget(self._summary, stretch=1)
         self._sync_mode_rows()
+        self._sync_bench()
         self._sync_buttons()
 
     def _sync_mode_rows(self, *_args):
@@ -272,6 +278,7 @@ class GSWidget(QWidget):
             self._show_feasibility(None)
             self._sketch.set_properties(None)
             self._slm_sketch.set_properties(None)
+            self._bench.set_modes_radius(None, 0.0)
             return
         properties = engine.get_gs_properties()
         illumination = getattr(getattr(engine, "illumination", None), "ILLUMINATION", None)
@@ -279,6 +286,17 @@ class GSWidget(QWidget):
         self._show_feasibility(properties)
         self._sketch.set_properties(properties)
         self._slm_sketch.set_properties(properties, illumination)
+        self._bench.set_modes_radius(
+            _modes_radius_mm(properties),
+            float(self._controls["fout"].value()),
+        )
+
+    def _sync_bench(self, *_args):
+        self._bench.set_beam(
+            float(self._controls["fin"].value()),
+            float(self._controls["fout"].value()),
+            float(self._controls["smf_in_NA"].value()),
+        )
 
     def _load_coefs_file(self):
         path, _selected = QFileDialog.getOpenFileName(self, "Load field coefs", "", "NumPy (*.npz)")
@@ -413,6 +431,16 @@ class _SettingsScroll(QScrollArea):
         if widget is not None:
             width = max(width, widget.minimumSizeHint().width())
         return QSize(width, 80)
+
+
+def _modes_radius_mm(properties: dict) -> float | None:
+    """Mode coverage radius in millimetres, using the downscaled SLM pitch."""
+    radius_px = properties.get("modes_coverage_rad_px_approx")
+    pitch = properties.get("slm_pixel_size_um")
+    downscale = properties.get("downscale")
+    if radius_px is None or pitch is None or downscale is None:
+        return None
+    return float(radius_px) * float(pitch) * float(downscale) * 1e-3
 
 
 def _format_duration(seconds: float) -> str:
