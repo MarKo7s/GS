@@ -96,7 +96,12 @@ def main() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
 
     gui = GSWidget(engine)
-    gui.resize(1280, 980)
+    gui.resize(1680, 1480)
+    # The desktop clamps the window. Keep the property pane short enough
+    # that the schematic and the two plane sketches stay on screen.
+    gui._properties.setMaximumHeight(220)
+    gui.layout().setStretch(0, 3)
+    gui.layout().setStretch(1, 1)
     gui.show()
     gui.raise_()
     gui.activateWindow()

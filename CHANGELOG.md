@@ -4,7 +4,7 @@ All notable changes to gs are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.2.0] - 2026-10-22
 
 ### Added
 
@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Every `GS.run` appends to `%PROGRAMDATA%\LAB\Algorithm\GS\logger\gs.log`, including when `verbose` is false. A mask that does not pass is a warning.
 - Optional `GSWidget` (`pip install gs[gui]`) to build, run, save, and inspect an engine without calling `GS.run` on the GUI thread.
 - `get_gs_properties()` includes the feasibility flags (power outside the pupil, mode power outside the aperture, illumination support, and the maximum MMF NA). `GSWidget` shows them and can load a library without copying the saved masks.
+- `GSWidget` draws the SMF and MMF beams only as far as the SLM. The SLM bar is the aperture, and the labels are the equivalent numerical apertures (coverage radius over focal length).
 
 ## [1.1.0] - 2026-10-19
 

@@ -24,7 +24,7 @@ gs/
 ```
 fibremodes@v1.1.1  (+ cupy-cuda13x via [gpu])
         ↑
-      gs@v1.1.0
+      gs@v1.2.0
 ```
 
 `gs` pins `fibremodes[gpu]` by git tag in `pyproject.toml`. Installing `gs` pulls fibremodes (LG/HG modes) and CuPy — no manual `sys.path` chaining.
@@ -192,7 +192,9 @@ gui = GSWidget(library)
 gui.show()
 ```
 
-Focal lengths and the beam waist are shown in millimetres. The engine still stores those lengths in micrometres. The picture below is the window after a fibre-mode library run: feasibility, the SLM-plane illumination, and the efficiency and overlap of each mask.
+Focal lengths and the beam waist are shown in millimetres. The engine still stores those lengths in micrometres. The picture below is the window after a fibre-mode library run: feasibility, the bench schematic, the SLM-plane illumination, and the efficiency and overlap of each mask.
+
+The schematic draws both beams only as far as the SLM. Yellow is the illumination coverage and blue is the mode coverage. The SLM bar is the aperture, so a footprint larger than the aperture sticks out of the bar. `NA_SMF eq` is the illumination radius over `fin`, and `NA_MMF eq` is the mode radius over `fout`. Changing either focal length in the form rescales that beam before the engine is rebuilt.
 
 <!-- gui-screenshot -->
 ![GS widget after a mode-library run](docs/images/gui.png)
@@ -220,7 +222,7 @@ from gs.toolbox.setup import optical_setup, GS_mask_setup
 ### From GitHub (tagged release)
 
 ```bash
-pip install "gs @ git+https://github.com/MarKo7s/GS.git@v1.1.0"
+pip install "gs @ git+https://github.com/MarKo7s/GS.git@v1.2.0"
 ```
 
 That resolves the pinned `fibremodes[gpu] @ …@v1.1.1` (and CuPy via that extra).
@@ -229,7 +231,7 @@ Other packages can depend on the same pin in `pyproject.toml`:
 
 ```toml
 dependencies = [
-  "gs @ git+https://github.com/MarKo7s/GS.git@v1.1.0",
+  "gs @ git+https://github.com/MarKo7s/GS.git@v1.2.0",
 ]
 ```
 

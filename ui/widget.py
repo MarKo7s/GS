@@ -69,7 +69,7 @@ class GSWidget(QWidget):
         self._controls["engine_mode"].currentIndexChanged.connect(self._sync_mode_rows)
         self._controls["mode_basis"].currentIndexChanged.connect(self._sync_mode_rows)
         self._controls["full_catalog"].toggled.connect(self._sync_mode_rows)
-        for key in ("fin", "fout", "smf_in_NA"):
+        for key in ("fin", "fout"):
             self._controls[key].valueChanged.connect(self._sync_bench)
 
         self._create = QPushButton("Create")
@@ -145,8 +145,8 @@ class GSWidget(QWidget):
         plots.addLayout(sketches, stretch=1)
 
         side = QVBoxLayout()
-        side.addWidget(self._properties, stretch=1)
-        side.addLayout(plots, stretch=1)
+        side.addWidget(self._properties, stretch=2)
+        side.addLayout(plots, stretch=3)
 
         column = QVBoxLayout()
         column.addWidget(self._settings_box, stretch=1)
@@ -236,6 +236,7 @@ class GSWidget(QWidget):
         self._engine = engine
         self._results_ready = bool(has_results)
         write_settings(self._controls, settings_from_engine(engine))
+        self._sync_bench()
         self._sync_mode_rows()
         self._refresh_properties()
         if has_results:
@@ -278,7 +279,7 @@ class GSWidget(QWidget):
             self._show_feasibility(None)
             self._sketch.set_properties(None)
             self._slm_sketch.set_properties(None)
-            self._bench.set_modes_radius(None, 0.0)
+            self._bench.set_footprints(None, None, None, 0.0, 0.0)
             return
         properties = engine.get_gs_properties()
         illumination = getattr(getattr(engine, "illumination", None), "ILLUMINATION", None)
@@ -286,8 +287,12 @@ class GSWidget(QWidget):
         self._show_feasibility(properties)
         self._sketch.set_properties(properties)
         self._slm_sketch.set_properties(properties, illumination)
-        self._bench.set_modes_radius(
-            _modes_radius_mm(properties),
+        pupil = properties.get("pupil_radius_um")
+        self._bench.set_footprints(
+            _coverage_mm(properties, "ill_coverage_rad_px_approx"),
+            _coverage_mm(properties, "modes_coverage_rad_px_approx"),
+            None if pupil is None else float(pupil) * 1e-3,
+            float(self._controls["fin"].value()),
             float(self._controls["fout"].value()),
         )
 
@@ -295,7 +300,6 @@ class GSWidget(QWidget):
         self._bench.set_beam(
             float(self._controls["fin"].value()),
             float(self._controls["fout"].value()),
-            float(self._controls["smf_in_NA"].value()),
         )
 
     def _load_coefs_file(self):
@@ -433,9 +437,9 @@ class _SettingsScroll(QScrollArea):
         return QSize(width, 80)
 
 
-def _modes_radius_mm(properties: dict) -> float | None:
-    """Mode coverage radius in millimetres, using the downscaled SLM pitch."""
-    radius_px = properties.get("modes_coverage_rad_px_approx")
+def _coverage_mm(properties: dict, key: str) -> float | None:
+    """Coverage radius in millimetres, using the downscaled SLM pitch."""
+    radius_px = properties.get(key)
     pitch = properties.get("slm_pixel_size_um")
     downscale = properties.get("downscale")
     if radius_px is None or pitch is None or downscale is None:

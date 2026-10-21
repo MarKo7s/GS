@@ -13,70 +13,97 @@ _HARDWARE = QColor(230, 230, 230)
 
 
 class OpticalBench(QWidget):
-    """SMF to the SLM in yellow, MMF to the SLM in blue.
+    """Both beams are traced back from their coverage radii on the SLM.
 
-    Yellow half-height is ``fin * NA_SMF``. Blue half-height is the mode
-    coverage radius, scaled by the current ``fout`` against the focal length
-    the engine was built with. Both beams stop on the SLM.
+    The SLM bar is the aperture. A radius larger than the aperture sticks out
+    of the bar. ``NA_SMF eq`` is the illumination radius over ``fin``, and
+    ``NA_MMF eq`` is the mode radius over ``fout``.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._fin_mm = 1.0
         self._fout_mm = 1.0
-        self._na_smf = 0.1
+        self._ill_radius_mm = None
         self._modes_radius_mm = None
+        self._pupil_mm = None
+        self._fin_ref_mm = None
         self._fout_ref_mm = None
         self.setFixedHeight(168)
 
-    def set_beam(self, fin_mm: float, fout_mm: float, na_smf: float) -> None:
+    def set_beam(self, fin_mm: float, fout_mm: float) -> None:
         self._fin_mm = max(float(fin_mm), 0.1)
         self._fout_mm = max(float(fout_mm), 0.1)
-        self._na_smf = max(float(na_smf), 0.0)
         self.update()
 
-    def set_modes_radius(self, radius_mm: float | None, fout_mm: float) -> None:
-        """Mode footprint on the SLM, measured at ``fout_mm``."""
-        self._modes_radius_mm = None if radius_mm is None else float(radius_mm)
-        self._fout_ref_mm = float(fout_mm) if radius_mm is not None else None
+    def set_footprints(
+        self,
+        ill_mm: float | None,
+        modes_mm: float | None,
+        pupil_mm: float | None,
+        fin_mm: float,
+        fout_mm: float,
+    ) -> None:
+        """Coverage radii and the aperture, measured at these focal lengths."""
+        self._ill_radius_mm = None if ill_mm is None else float(ill_mm)
+        self._modes_radius_mm = None if modes_mm is None else float(modes_mm)
+        self._pupil_mm = None if not pupil_mm else float(pupil_mm)
+        self._fin_ref_mm = float(fin_mm) if ill_mm is not None else None
+        self._fout_ref_mm = float(fout_mm) if modes_mm is not None else None
         self.update()
 
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        rect = self.rect().adjusted(8, 6, -8, -6)
         painter.fillRect(self.rect(), QColor(12, 12, 12))
+        painter.setPen(QColor(210, 210, 210))
+        painter.drawText(QRectF(0, 2, self.width(), 16), Qt.AlignmentFlag.AlignCenter, "Optical Schematic")
+        rect = self.rect().adjusted(8, 20, -8, -6)
         if rect.width() < 80 or rect.height() < 40:
             return
 
-        cy = rect.center().y() + 4
-        span = rect.height() * 0.30
-        yellow_mm = self._fin_mm * self._na_smf
-        blue_mm = self._blue_mm()
-        scale = span / max(yellow_mm, blue_mm or 0.0, 1e-6)
-        yellow = yellow_mm * scale
-        blue = None if blue_mm is None else blue_mm * scale
-
+        cy = rect.center().y() + 2
         smf, lens1, slm, lens2, mmf = self._stations(rect)
+        bar = rect.height() * 0.30
+        yellow = self._half_px(self._scaled(self._ill_radius_mm, self._fin_mm, self._fin_ref_mm), bar, rect)
+        blue = self._half_px(self._scaled(self._modes_radius_mm, self._fout_mm, self._fout_ref_mm), bar, rect)
+        na_smf = self._equivalent_na(self._ill_radius_mm, self._fin_ref_mm)
+        na_mmf = self._equivalent_na(self._modes_radius_mm, self._fout_ref_mm)
+
         painter.setPen(QPen(_AXIS, 1))
         painter.drawLine(QPointF(smf, cy), QPointF(mmf, cy))
-
-        self._beam(painter, _YELLOW, smf, lens1, slm, cy, yellow)
+        if yellow is not None:
+            self._beam(painter, _YELLOW, smf, lens1, slm, cy, yellow)
         if blue is not None:
             self._beam(painter, _BLUE, mmf, lens2, slm, cy, blue)
+        self._lens(painter, lens1, cy, bar)
+        self._lens(painter, lens2, cy, bar)
+        self._bar(painter, slm, cy, bar, "SLM")
 
         self._fibre(painter, smf, cy, rect.bottom() - 16, 3.5, "SMF", -1)
-        self._lens(painter, lens1, cy)
-        self._slm(painter, slm, cy, rect.height() * 0.36)
-        self._lens(painter, lens2, cy)
         self._fibre(painter, mmf, cy, rect.bottom() - 16, 6.0, "MMF", 1)
-        self._gap_label(painter, lens1, slm, rect.bottom() - 16, f"fin {self._fin_mm:.1f} mm")
-        self._gap_label(painter, slm, lens2, rect.bottom() - 16, f"fout {self._fout_mm:.1f} mm")
+        self._apex_label(painter, lens1, rect.bottom() - 16, f"fin {self._fin_mm:.1f} mm")
+        self._apex_label(painter, lens2, rect.bottom() - 16, f"fout {self._fout_mm:.1f} mm")
+        if na_smf is not None:
+            self._na_label(painter, (smf + lens1) / 2, rect.top(), f"NA_SMF eq {na_smf:.3f}", _YELLOW)
+        if na_mmf is not None:
+            self._na_label(painter, (lens2 + mmf) / 2, rect.top(), f"NA_MMF eq {na_mmf:.3f}", _BLUE)
 
-    def _blue_mm(self) -> float | None:
-        if self._modes_radius_mm is None or not self._fout_ref_mm:
+    def _scaled(self, radius_mm: float | None, focal_mm: float, focal_ref_mm: float | None) -> float | None:
+        if radius_mm is None or not focal_ref_mm:
             return None
-        return self._modes_radius_mm * (self._fout_mm / self._fout_ref_mm)
+        return radius_mm * (focal_mm / focal_ref_mm)
+
+    def _equivalent_na(self, radius_mm: float | None, focal_mm: float | None) -> float | None:
+        if radius_mm is None or not focal_mm:
+            return None
+        return radius_mm / focal_mm
+
+    def _half_px(self, radius_mm: float | None, bar: float, rect: QRectF) -> float | None:
+        """Map a radius onto the aperture bar. Larger than the pupil sticks out."""
+        if radius_mm is None or not self._pupil_mm:
+            return None
+        return min(bar * (radius_mm / self._pupil_mm), rect.height() * 0.44)
 
     def _stations(self, rect: QRectF) -> tuple[float, float, float, float, float]:
         """SMF, first lens, SLM, second lens, MMF. Gaps follow the focal lengths."""
@@ -124,26 +151,31 @@ class OpticalBench(QWidget):
         painter.setPen(_HARDWARE)
         painter.drawText(QRectF(x - 22, label_top, 44, 16), Qt.AlignmentFlag.AlignCenter, label)
 
-    def _lens(self, painter: QPainter, x: float, cy: float):
+    def _lens(self, painter: QPainter, x: float, cy: float, half: float):
+        bulge = max(6.0, half * 9.0 / 28.0)
         path = QPainterPath()
-        path.moveTo(x, cy - 28)
-        path.quadTo(x + 9, cy, x, cy + 28)
-        path.quadTo(x - 9, cy, x, cy - 28)
-        painter.setPen(QPen(_HARDWARE, 1.4))
+        path.moveTo(x, cy - half)
+        path.quadTo(x + bulge, cy, x, cy + half)
+        path.quadTo(x - bulge, cy, x, cy - half)
+        painter.setPen(QPen(_HARDWARE, 1.6))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(path)
 
-    def _slm(self, painter: QPainter, x: float, cy: float, half: float):
-        rect = QRectF(x - 5, cy - half, 10, 2 * half)
-        painter.setPen(QPen(_HARDWARE, 1.4))
-        painter.setBrush(QColor(70, 70, 78))
+    def _bar(self, painter: QPainter, x: float, cy: float, half: float, label: str | None = None):
+        rect = QRectF(x - 4, cy - half, 8, 2 * half)
+        fill = QColor(70, 70, 78, 90)
+        painter.setPen(QPen(_HARDWARE, 1.6))
+        painter.setBrush(fill)
         painter.drawRect(rect)
+        if label is None:
+            return
         painter.setPen(_HARDWARE)
-        painter.drawText(QRectF(x - 24, cy - half - 16, 48, 14), Qt.AlignmentFlag.AlignCenter, "SLM")
+        painter.drawText(QRectF(x - 24, cy - half - 16, 48, 14), Qt.AlignmentFlag.AlignCenter, label)
 
-    def _gap_label(self, painter: QPainter, left: float, right: float, top: float, text: str):
+    def _apex_label(self, painter: QPainter, x: float, top: float, text: str):
         painter.setPen(QColor(190, 190, 190))
-        span = right - left
-        if painter.fontMetrics().horizontalAdvance(text) > span - 4:
-            text = text.split(" ", 1)[-1]
-        painter.drawText(QRectF(left, top, span, 16), Qt.AlignmentFlag.AlignCenter, text)
+        painter.drawText(QRectF(x - 52, top, 104, 16), Qt.AlignmentFlag.AlignCenter, text)
+
+    def _na_label(self, painter: QPainter, x: float, top: float, text: str, color: QColor):
+        painter.setPen(color)
+        painter.drawText(QRectF(x - 58, top, 116, 16), Qt.AlignmentFlag.AlignCenter, text)
