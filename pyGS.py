@@ -1,21 +1,30 @@
 try:
     from .toolbox.setup import *
     from .toolbox.gs_operators import *
+    from .utils.library import save_library
+    from .logger import log_info, log_mask_result, log_run_preamble
 except ImportError:
     from toolbox.setup import *
     from toolbox.gs_operators import *
+    from utils.library import save_library
+    from logger import log_info, log_mask_result, log_run_preamble
 
 import numpy as np
 import cupy as cp
 import time
 
 from pylab import *
+from scipy.ndimage import zoom
 
 GS_ENGINE_MODE = ['fields', 'fibremodes']
 OPTIONS = {'fields': {'number_masks': None},
             'fibremodes': {'mode_range': None}}
 
 #Typically fields use overlap metrid and modes use crosstalk metric. This could or could not be a open parameter
+
+def _as_float(value):
+    return float(cp.asnumpy(value))
+
 
 class GS:
     def __init__(self, opticalsetup: optical_setup, masksetup: GS_mask_setup, engine_mode: str = 'fields', **options ):
@@ -54,10 +63,77 @@ class GS:
             return
     
         self._GS_setup()
+        self._feasibility_check_done = self.feasibility_setup_check()
 
     def set_mode_basis(self, modes: np.ndarray):
         self.modes.set_mode_basis(modes)
         self._GS_setup()
+
+    def feasibility_setup_check(self, thr: float = 0.01):
+        """ Check setup can generate targets"""
+        # If NA SMF and NA MMF is provided this equivalent to: NA_SMF / NA_MMF >  f_out / f_in (This does not account for power guide by cladding)
+        # In general we can estimate it checking the illumination power distribution and the mode basis
+        # The illumination needs to extended beyond the projected MMF modes on to the SLM plane.
+        if self.modes._modes_SLM is None:
+            self.modes.modes_at_SLM_plane()
+            modes_SLM = self.modes.modes_SLM
+        else:
+            modes_SLM = self.modes._modes_SLM
+
+        incoherent_sum_modes_SLM = sum(abs(modes_SLM[:,...]), axis = 0)
+        incoherent_sum_modes_SLM /= incoherent_sum_modes_SLM.max()
+        illumination_norm = self.illumination.ILLUMINATION / abs(self.illumination.ILLUMINATION).max() #norm to 1 to compare
+
+        #Check for illumination power laying outside the pupil
+        pupil_radius = self.opticalsetup.pupil_um / 2
+        illumination_outside_pupil = self.illumination.ILLUMINATION.copy()
+        illumination_outside_pupil[self.slmplane.R <= pupil_radius] = 0
+        illumination_outside_pupil_power = sum(abs(illumination_outside_pupil)**2) #this is not the biggest problem, could poroduce ringing artifacts
+        self._illumination_outside_pupil_power = illumination_outside_pupil_power
+
+        #Do tails still carry power higher than modes power distrution does?
+        ill_cut = illumination_norm[illumination_norm.shape[0]//2, :]
+        modes_cut = incoherent_sum_modes_SLM[incoherent_sum_modes_SLM.shape[0]//2, :]
+
+        ill_cut_pos0 = where(ill_cut > thr)[0] #Get the position of the first pixel that is above the threshold
+        modes_cut_pos0 = where(modes_cut > thr)[0] #Get the position of the first pixel that is above the threshold
+
+        self._ill_coverage_approx = ill_cut_pos0
+        self._modes_coverage_approx = modes_cut_pos0
+
+        illumination_min = ill_cut.min()
+        modes_min = modes_cut.min()
+        check_tails_power = illumination_min > modes_min #This checks illumination provides support to the target modes
+        self._illumination_support_check = check_tails_power
+
+        #check that modes are inside aperture as well
+        incoherent_sum_modes_SLM_unitary = incoherent_sum_modes_SLM / sqrt(sum(abs(incoherent_sum_modes_SLM)**2))
+        incoherent_sum_moodes_outside_aperture = incoherent_sum_modes_SLM_unitary
+        incoherent_sum_moodes_outside_aperture[self.slmplane.R <= pupil_radius] = 0
+        modes_outside_aperture_power = sum(abs(incoherent_sum_moodes_outside_aperture)**2)
+        self._mode_basis_power_outside_pupil = modes_outside_aperture_power
+
+        print('--------------------------------')
+        print('Feasibility setup integritycheck:')
+        illumination_pow_check = illumination_outside_pupil_power < thr
+        self._illumination_pow_check_passed = illumination_pow_check
+        modes_pow_check = modes_outside_aperture_power < thr
+        self._modes_pow_check_passed = modes_pow_check
+        print('Illumination outside pupil power:', f'{illumination_outside_pupil_power * 100:.2f}' , '% -->', illumination_pow_check)
+        print('Modes outside aperture power:', f'{modes_outside_aperture_power * 100:.2f}' , '% -->', modes_pow_check)
+        print('Illumination overlap support:', check_tails_power)
+        self._illumination_overlap_support_check_passed = check_tails_power
+        self._setup_feasible = illumination_pow_check and modes_pow_check and check_tails_power
+        print('Setup feasible? ', self._setup_feasible)
+
+        #Calculate NA_MMF max
+        self._NA_MMF_system_max = self.opticalsetup.smf_in_NA * self.opticalsetup.fin / self.opticalsetup.fout
+        print('This system support up to NA_MMF:', f'{self._NA_MMF_system_max:.2f}')
+        print('--------------------------------')
+
+        return True
+
+
 
     def _GS_setup(self):
         """ It will allocate all the memory needed for the GS engine. """
@@ -174,7 +250,12 @@ class GS:
         self.D_core_coefs = np.zeros((numer_masks, num_modes), dtype=np.complex64)
         self.convergence_history = np.zeros((numer_masks, self.masksetup.MAX_iterations), dtype=np.float32)
         self.efficiency_history = np.zeros((numer_masks, self.masksetup.MAX_iterations), dtype=np.float32)
-        self.mask_passed =  np.zeros(numer_masks, dtype=np.uint8) #0, passed, 1 overlap not achieved, 2 SNR not achieved, 3 both
+        # Bits, high to low: gradient fail, SNR fail, overlap fail. 0 passed, 7 all three failed.
+        self.mask_passed =  np.zeros(numer_masks, dtype=np.uint8)
+        self.basis_coupling_snr = np.zeros(numer_masks, dtype=np.float32)
+        self.dumping_field = np.zeros(numer_masks, dtype=np.float32)
+        self.core_field = np.zeros(numer_masks, dtype=np.float32)
+        self.leaked_power = np.zeros(numer_masks, dtype=np.float32)
 
         #! Gather the information regarding the resampling of the mask
 
@@ -190,6 +271,17 @@ class GS:
         #update mem space
         self.gpu_memory.register('ILLUMINATION', ILLUMINATION, dtype=cp.complex64)
         self.cpu_memory.replace('ILLUMINATION', ILLUMINATION)
+
+    def get_illumination(self):
+        downscale = self.masksetup.downscale
+        if downscale > 1:
+            illumination = zoom(self.illumination.ILLUMINATION, zoom = downscale, order=1)
+            illumination = illumination / sqrt(sum(abs(illumination)**2))
+            return illumination
+        else:
+            illumination =self.illumination.ILLUMINATION
+            illumination = illumination / sqrt(sum(abs(illumination)**2))
+            return illumination
     
 
     def _prepare_run(self, inpucoefs: np.ndarray | None = None):
@@ -256,18 +348,65 @@ class GS:
         }
 
     def _print_run_summary(self, num_masks: int, mask_idx, t0: float, verbose: bool):
+        elapsed_time = (time.perf_counter() - t0) * 1000
+        if num_masks != mask_idx:
+            message = f'{mask_idx}/{num_masks} masks done in {elapsed_time:.1f} ms - '
+        else:
+            message = f'All {num_masks} masks done in {elapsed_time:.1f} ms'
+        log_info(message)
         if verbose:
-            elapsed_time = (time.perf_counter() - t0) * 1000
-            if num_masks != mask_idx :
-                print(f'{mask_idx}/{num_masks} masks done in {elapsed_time:.1f} ms - ')
-            else:
-                print(f'All {num_masks} masks done in {elapsed_time:.1f} ms')
+            print(message)
+
+    def get_gs_properties(self) -> dict:
+        """Geometry and catalog values already held on the engine."""
+        optical = self.opticalsetup
+        mask = self.masksetup
+        slm = self.slmplane
+        downscale = mask.downscale
+        useful = int(optical.masksize) // int(downscale)
+        samples = int(slm.SLM_PLANE_N)
+        length = float(slm.SLM_PLANE_L)
+        mode_array = self.modes.modes_array if self.modes.modes_array is not None else self.modes.modes_array_all
+        number_of_modes = None if mode_array is None else int(mode_array.shape[0])
+        memory = getattr(self, "cpu_memory", None)
+        if memory is not None and "MODES_ARRAY_1D" in memory:
+            number_of_modes = int(memory.get("MODES_ARRAY_1D").shape[0])
+        waist = self.illumination._calculated_W0
+        return {
+            "engine_mode": self.engine_mode,
+            "mode_basis": optical.mode_basis,
+            "gs_ready": bool(self._GS_ready),
+            "maskcount": getattr(self, "maskcount", None),
+            "number_of_modes": number_of_modes,
+            "mode_range": self._options.get("mode_range"),
+            "slm_size_um": float(optical.slm_pixel_size) * useful * float(downscale),
+            "artificial_slm_size_um": length,
+            "spatial_resolution_per_um": samples / length,
+            "image_plane_samples": samples,
+            "useful_slm_samples": int(slm.SLM_N),
+            "slm_pixel_size_um": float(optical.slm_pixel_size),
+            "pixel_size_fft_um": float(self.kspaceplane.px_kspace),
+            "max_spectral_distance_um": float(self.kspaceplane.max_spectral_distance_um),
+            "beam_waist_slm_um": None if waist is None else float(waist),
+            "beam_waist_mode": self.illumination.mode,
+            "core_diameter_um": float(optical.MMF_diameter),
+            "core_radius_um": float(optical.MMF_diameter) / 2,
+            "forbidden_radius_um": float(mask.filtering_mask_radius_factor) * float(optical.MMF_diameter) / 2,
+        }
+
+    def save(self, folder=None, label=None):
+        if not self._GS_ready:
+            raise RuntimeError("GS engine is not ready to save")
+        return save_library(self, folder=folder, label=label)
 
     def run(self, inpucoefs: np.ndarray | None = None, verbose: bool = False):
         if not self._GS_ready:
-            print('It seems the GS engine is not ready, probably the mode basis is not set yet.')
+            message = 'It seems the GS engine is not ready, probably the mode basis is not set yet.'
+            print(message)
+            log_info(message)
             return
 
+        log_run_preamble(self.get_gs_properties())
         cp.cuda.Device().synchronize()
         t0 = time.perf_counter()
 
@@ -304,9 +443,13 @@ class GS:
 
     #! Helper function to move tmp results from a stream to the cpu memory (final buffer results)
     def _store_GS_results_on_cpu(self, slot: dict, mask_idx: int, complementary_mask: bool = False, verbose: bool = False):
+        message = (
+            f'Indexing results to index: {mask_idx} - Complementary mask: {complementary_mask}'
+            f'\n*****************************************************'
+        )
+        log_info(message)
         if verbose:
-            print( f'Indexing results to index: {mask_idx} - Complementary mask: {complementary_mask}'
-            f'\n*****************************************************')
+            print(message)
         input_phase_mask = slot['phase_mask'] if not complementary_mask else self._calculate_complementary_mask(slot['phase_mask'])
         new_mask_idx = self._index_GS_results(slot, input_phase_mask, mask_idx) #everytime we index we increment  
         return new_mask_idx
@@ -320,6 +463,10 @@ class GS:
         self.iteration_convergence[i] = slot['iteration_convergence']
         self.efficiency_history[i] = cp.asnumpy(slot['efficiency_history'])
         self.mask_passed[i] = slot['passed']
+        self.basis_coupling_snr[i] = slot['basis_coupling_snr']
+        self.dumping_field[i] = slot['dumping_field']
+        self.core_field[i] = slot['core_field']
+        self.leaked_power[i] = slot['leaked_power']
         return i + 1
 
 
@@ -361,6 +508,7 @@ class GS:
         _convergence_cnt = max(1, int(convergence_check_interval))
 
         _gradient_threshold = -0.001 #if gradient start becoming negative, stop the GS loop
+        _gradient_security_stop_overlap_margin = 0.01
         _field_backup = complex_field(B, A)
         C = _field_backup
         #! GS loop
@@ -395,6 +543,9 @@ class GS:
             # Spatial core power (not modal efficiency) — stop if injection drops too low
             _core_power = power_field(D * R_CORE)
             _core_power_too_low = bool((_core_power <= minium_efficiency).get())
+            # Only stop by graddient if we were close to the goal by a margin, otherwise keep pushing
+            _close_to_goal = bool((goal_check > (_goal_gpu - _gradient_security_stop_overlap_margin)).get())
+            _negative_convergence_gradient = (bool((_goal_gradient < _gradient_threshold).get()) and _close_to_goal)
 
             #* Leakage is the total power in the core - power coupled into the basis.
             #* In theory we want all core coupled into the basis so all power is transmitted into the fiber.
@@ -408,12 +559,13 @@ class GS:
             #print(i, 'Basis to Core power SNR', _basis_coupling_SNR)
             target_coupling_SNR =  min_coupling_SNR_dB #dB
    
-            if i % _convergence_cnt == 0 or i == max_iterations - 1 or _core_power_too_low or _goal_gradient < _gradient_threshold:
+            if i % _convergence_cnt == 0 or i == max_iterations - 1 or _core_power_too_low or _negative_convergence_gradient:
                 _did_it_converged = (goal_check >= _goal_gpu) & (_basis_coupling_SNR >= target_coupling_SNR)
 
-                if _did_it_converged.get() or i == max_iterations - 1 or _core_power_too_low or _goal_gradient < _gradient_threshold:
-
-                    if _goal_gradient < _gradient_threshold:
+                if _did_it_converged.get() or i == max_iterations - 1 or _core_power_too_low or _negative_convergence_gradient:
+                    
+                    #! Revert to previous iteration: Mask and efficience are reverted the power distribution is not
+                    if _negative_convergence_gradient:
                         C = _field_backup #use the previous iteration field to avoid going back and forth
                         i -= 1 #decrement the iteration to avoid skipping the current iteration
 
@@ -428,13 +580,25 @@ class GS:
                     _power_delivered_inbetween_region = power_field(D * (R0 - R_CORE)) # Power in between core and dumping region
                     _uncontrolled_field_power = _allowed_region_field - efficiency # Total uncrontrol power in the allowed region
                     _leaked_power = _core_field - efficiency # Uncontrolled power in the core
-                    _passed = self._did_it_passed(goal_check >= _goal_gpu, _basis_coupling_SNR >= target_coupling_SNR)
+                    _passed = self._did_it_passed(
+                        bool((goal_check >= _goal_gpu).get()),
+                        bool((_basis_coupling_SNR >= target_coupling_SNR).get()),
+                        not _negative_convergence_gradient,
+                    )
+                    basis_coupling_snr = _as_float(_basis_coupling_SNR)
+                    dumping_field = _as_float(_dumping_field)
+                    core_field = _as_float(_core_field)
+                    leaked_power = _as_float(_leaked_power)
 
+                    message = (
+                        f'- {mask_idx} --> Iteration {i} - Efficiency {efficiency:.3f} - Goal check {goal_check:.3f} - Basis to Core power SNR {_basis_coupling_SNR:.2f} dB \n'
+                        f'    | Dumping field (%) {_dumping_field * 100:.2f} - Core field (%) {_core_field * 100:.2f} - Uncontrolled leaked power in the core (%) {_leaked_power * 100:.4f}\n'
+                        f'    | Goal gradient {_goal_gradient:.4f} - Gradient threshold {_gradient_threshold:.4f}'
+                        f'\n ------------------------------------------------'
+                    )
+                    log_mask_result(message, _passed)
                     if verbose:
-                        print(f'- {mask_idx} --> Iteration {i} - Efficiency {efficiency:.3f} - Goal check {goal_check:.3f} - Basis to Core power SNR {_basis_coupling_SNR:.2f} dB \n'
-                            f'    | Dumping field (%) {_dumping_field * 100:.2f} - Core field (%) {_core_field * 100:.2f} - Uncontrolled leaked power in the core (%) {_leaked_power * 100:.4f}\n'
-                            f'    | Goal gradient {_goal_gradient:.4f} - Gradient threshold {_gradient_threshold:.4f}'
-                            f'\n ------------------------------------------------')
+                        print(message)
 
                     # plot(abs(cp.asnumpy(D_core_coefs))**2)
                     # fig, ax = subplots(1,2, figsize = (10, 5))
@@ -498,17 +662,25 @@ class GS:
                 'iteration_convergence': iteration_convergence,
                 'efficiency_history': _efficiency,
                 'passed': _passed,
+                'basis_coupling_snr': basis_coupling_snr,
+                'dumping_field': dumping_field,
+                'core_field': core_field,
+                'leaked_power': leaked_power,
             }
 
 
-    # mask_passed lookup. Bits are (not SNRPASS, not overlapPASS):
-    #   00 -> 0  both passed
-    #   01 -> 1  overlap not achieved
-    #   10 -> 2  SNR not achieved
-    #   11 -> 3  both failed
+    # mask_passed bits, high to low: gradient fail, SNR fail, overlap fail.
+    #   000 -> 0  passed
+    #   001 -> 1  overlap
+    #   010 -> 2  SNR
+    #   011 -> 3  overlap + SNR
+    #   100 -> 4  gradient
+    #   101 -> 5  gradient + overlap
+    #   110 -> 6  gradient + SNR
+    #   111 -> 7  all three
     @staticmethod
-    def _did_it_passed(overlapPASS: bool, SNRPASS: bool):
-        bits = f"{int(not SNRPASS)}{int(not overlapPASS)}"
+    def _did_it_passed(overlapPASS: bool, SNRPASS: bool, gradientPASS: bool):
+        bits = f"{int(not gradientPASS)}{int(not SNRPASS)}{int(not overlapPASS)}"
         return int(bits, 2)
 
 

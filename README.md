@@ -9,7 +9,9 @@ GPU Gerchberg–Saxton phase-mask generation for multimode fibre injection / SLM
 ```
 gs/
 ├── pyGS.py              unified GS engine
+├── logger/              run log under %PROGRAMDATA%\\LAB\\Algorithm\\GS\\logger
 ├── toolbox/             optical_setup, GS_mask_setup, planes, filters, modes, memory
+├── ui/                  optional PySide6 GSWidget (`pip install gs[gui]`)
 ├── legacy/              pyPhasemasks and modemasks (regression tests only)
 ├── test/                notebooks and regression helpers
 ├── scripts/release.py   git-tag release automation
@@ -65,9 +67,32 @@ library = GS(optical, masksetup, engine_mode="fibremodes", mode_range=(0, 20))
 library.run(verbose=True)
 ```
 
-After `run`, read `phase_masks` with shape `(n_masks, masksize, masksize)` in radians, plus `efficiency`, `iteration_convergence`, `convergence_history`, `efficiency_history`, `D_core_coefs`, and `mask_passed`.
+After `run`, read `phase_masks` with shape `(n_masks, masksize, masksize)` in radians, plus `efficiency`, `iteration_convergence`, `convergence_history`, `efficiency_history`, `D_core_coefs`, and `mask_passed`. Each mask also keeps `basis_coupling_snr` (dB), `dumping_field`, `core_field`, and `leaked_power` (fractions). `get_gs_properties()` returns the SLM and fibre-plane geometry.
 
-`mask_passed` is `0` when both the overlap goal and the coupling SNR were met, `1` when overlap was short, `2` when the SNR was short, and `3` when both were short.
+`mask_passed` is a bit mask. Bit 0 (value 1) means the overlap goal was missed, bit 1 (value 2) means the coupling SNR was short, and bit 2 (value 4) means the overlap gradient turned negative. `0` means all three passed. `7` means all three failed.
+
+Every run appends to `%PROGRAMDATA%\LAB\Algorithm\GS\logger\gs.log`, whether or not `verbose` is set. The file starts each run with the engine properties. A mask that does not pass is logged as a warning. `verbose=True` still prints the same lines to the console.
+
+The optional window is `from gs.ui import GSWidget` after `pip install gs[gui]`. It can take an existing engine or create one. `GS.run` is called on a worker thread.
+
+<!-- gui-screenshot -->
+![GS GUI](docs/images/gui.png)
+<!-- /gui-screenshot -->
+
+### Saving a library
+
+`engine.save()` writes `settings.json` and `masks.npz` into one folder. The same settings always use the same folder name, so a later save overwrites that library. When `folder` is omitted, fibre-mode libraries go to `%PROGRAMDATA%\LAB\Algorithm\GS\modes_lib\` and field libraries go to `%PROGRAMDATA%\LAB\Algorithm\GS\field_lib\`. Pass `label` to prefix the folder, for example `label="double_clad"`.
+
+```python
+from gs import GS, load_masks, settings_from_json
+
+run_folder = library.save(label="double_clad")
+optical, mask, engine_mode, options = settings_from_json(run_folder)
+engine = GS(optical, mask, engine_mode, **options)
+masks = load_masks(run_folder)["phase_masks"]
+```
+
+A custom basis is recorded as `mode_basis: "custom"` plus the label. The mode stack itself is not saved; pass it again with `set_mode_basis` when regenerating.
 
 `legacy/pyPhasemasks.py` and `legacy/modemasks.py` stay in the tree so regression tests can still call the old generators. New work uses `pyGS`.
 
@@ -170,15 +195,17 @@ dependencies = [
 ```bash
 git clone git@github.com:MarKo7s/GS.git
 cd GS
-pip install -e ".[notebooks,test]"
+pip install -e ".[gui,notebooks,test]"
 ```
+
+`gs[gui]` adds PySide6, pyqtgraph, and visualization for `GSWidget`.
 
 ### Conda environment
 
 ```bash
 conda create -n gs python=3.11 -y
 conda activate gs
-pip install -e ".[notebooks,test]"
+pip install -e ".[gui,notebooks,test]"
 ```
 
 `fibremodes[gpu]` pulls `cupy-cuda13x` for CUDA toolkit 13.x (e.g. 13.2). Do not install plain `cupy` beside that wheel. Restart Jupyter after setting `CUDA_PATH` if needed.
@@ -189,7 +216,7 @@ Register a Jupyter kernel (once):
 python -m ipykernel install --user --name gs --display-name "Python (gs)"
 ```
 
-`requirements.txt` remains for legacy workflows; prefer `pip install -e ".[notebooks,test]"`.
+`requirements.txt` remains for legacy workflows; prefer `pip install -e ".[gui,notebooks,test]"`.
 
 ## Developer notes
 

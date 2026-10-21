@@ -4,6 +4,15 @@ All notable changes to gs are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `GS.get_gs_properties()` reports the geometry and mode catalog already stored on the engine.
+- Each mask keeps its final basis-to-core SNR, dumping field, core field, and core leakage, and those arrays are written with the library.
+- Every `GS.run` appends to `%PROGRAMDATA%\LAB\Algorithm\GS\logger\gs.log`, including when `verbose` is false. A mask that does not pass is a warning.
+- Optional `GSWidget` (`pip install gs[gui]`) to build, run, save, and inspect an engine without calling `GS.run` on the GUI thread.
+
 ## [1.1.0] - 2026-10-19
 
 ### Changed

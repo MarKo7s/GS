@@ -10,6 +10,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+gui = [
+  "PySide6>=6.5",
+  "pyqtgraph>=0.13",
+  "visualization @ git+https://github.com/MarKo7s/visualization.git@v1.0.0",
+]
 notebooks = [
   "matplotlib>=3.7",
   "jupyter>=1.0",
@@ -29,6 +34,9 @@ build-backend = "setuptools.build_meta"
 package-dir = {"gs" = "."}
 packages = [
   "gs",
+  "gs.logger",
   "gs.toolbox",
   "gs.legacy",
+  "gs.ui",
+  "gs.utils",
 ]

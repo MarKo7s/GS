@@ -9,10 +9,13 @@ except PackageNotFoundError:
 
 from .pyGS import GS
 from .toolbox.setup import GS_mask_setup, optical_setup
+from .utils.library import load_masks, settings_from_json
 
 __all__ = [
     "GS",
     "GS_mask_setup",
+    "load_masks",
     "optical_setup",
+    "settings_from_json",
     "__version__",
 ]

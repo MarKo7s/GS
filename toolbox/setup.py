@@ -1,5 +1,6 @@
 from numpy import arange, meshgrid, zeros
 import numpy as np
+from numpy.fft import fftshift, ifft2
 import cupy as cp
 
 from fibremodes.analytical.LG.ModesGen import LGmodes
@@ -30,10 +31,12 @@ class optical_setup:
     smf_in_NA (float): numerical aperture of the SMF input (used for SLM illumination calculation)
     smf_in_diameter (float): diameter of the SMF input in um (used for SLM illumination calculation)
     W0_slm (narray or None): Custom beam waist in (um). If illumination profile is provided, it will be used instead of the smf specs provided.
+    pupil_um (float): pupil diameter in um before slm plane
     """
 
     def __init__(self, wavelength, fin, fout, masksize, slm_pixel_size, MMF_mfd, MMF_diameter,
-                MMF_mode_groups, mode_basis='LG', smf_in_NA=0.1, smf_in_diameter=9, W0_slm=None):
+                MMF_mode_groups, mode_basis='LG', smf_in_NA=0.1, smf_in_diameter=9, W0_slm=None,
+                pupil_um = 7.5e3, include_pupil = False):
         self.wavelength = wavelength
         self.fin = fin
         self.fout = fout
@@ -49,6 +52,8 @@ class optical_setup:
         self.smf_in_NA = smf_in_NA
         self.smf_in_diameter = smf_in_diameter
         self.W0_slm = W0_slm
+        self.pupil_um = pupil_um
+        self.include_pupil = include_pupil
 
 
 class GS_mask_setup:
@@ -175,14 +180,17 @@ class illumination:
         d_smf = opticalsetup.smf_in_diameter
         NA_smf = opticalsetup.smf_in_NA
         slm_W0 = opticalsetup.W0_slm
+        self.include_pupil = opticalsetup.include_pupil
+        self.pupil_radius = opticalsetup.pupil_um / 2
         self.mode = None
         self._calculated_W0 = None
         self._opticalsetup = opticalsetup #store a view of the opticalsetup object
-        self.ILLUMINATION, self.mode, self._calculated_W0 = self.define_IlluminationBeam(_wlength, self._R, self._AREA, f_in, d_smf, NA_smf, slm_W0, printting)
+        self.ILLUMINATION, self.mode, self._calculated_W0 = self.define_IlluminationBeam(_wlength, self._R, self._AREA,
+         f_in, d_smf, NA_smf, slm_W0, self.include_pupil, self.pupil_radius, printting)
         
 
     @staticmethod
-    def define_IlluminationBeam(wlength, R, AREA, f_in, d_smf, NA_smf, slm_W0 = None, printting = True):
+    def define_IlluminationBeam(wlength, R, AREA, f_in, d_smf, NA_smf, slm_W0 = None, apply_pupil = False, pupil_radius = None, printting = True):
         
         if slm_W0 != None:
             w0_slm = slm_W0
@@ -195,15 +203,22 @@ class illumination:
             mode = 'Single Mode Fiber'
             
         slm_ill = np.exp(-(R/w0_slm)**2) #exp(-(R/w0_slm)**2)
+
+        if apply_pupil == True:
+            if pupil_radius <= 0:
+                raise ValueError('Pupil radius must be greater than 0')
+            slm_ill[R > pupil_radius] = 0
+
         slm_ill = slm_ill / np.sqrt(np.sum(np.abs(slm_ill)**2)) #Normalize the illumination beam
         c = AREA.shape[0]//2
         #slm_c = num_px_slm //2
         dd = slm_ill.shape[0]//2
+        #Zero padding if upsample is not zero
         AREA[c-dd:c+dd,c-dd:c+dd] = slm_ill
         INPUT_BEAM = AREA
         
         if printting == True:
-            print('Beam waist in the SLM -->', w0_slm *1e-3,' mm , Calculated via: ', mode )
+            print('Beam waist in the SLM -->', w0_slm *1e-3,' mm , Calculated via: ', mode, ' Pupil included:', apply_pupil)
 
         return INPUT_BEAM, mode, w0_slm
 
@@ -217,7 +232,7 @@ class illumination:
 
         self.ILLUMINATION, self.mode, self._calculated_W0 = self.define_IlluminationBeam(self.opticalsetup.wavelength, self._R, self._AREA, 
         self._opticalsetup.fin, self._opticalsetup.smf_in_diameter, 
-        self._opticalsetup.smf_in_NA, self._opticalsetup.W0_slm, printting=printting)
+        self._opticalsetup.smf_in_NA, self._opticalsetup.W0_slm, self.include_pupil, self.pupil_radius, printting=printting)
 
 
 class modes:
@@ -229,6 +244,7 @@ class modes:
     def __init__(self, opticalsetup: optical_setup, slmplane: slm_plane, kspaceplane: k_space_plane):
         basis = opticalsetup.mode_basis
         self._basis = basis
+        self._modes_SLM = None
         if basis == 'LG':
             LGmodesObject = LGmodes(opticalsetup.MMF_mfd, opticalsetup.MMF_mode_groups, slmplane.SLM_PLANE_N, kspaceplane.px_kspace, 
             generateModes = True, wholeSet = True, engine='GPU', multicore=True) #object]
@@ -262,6 +278,9 @@ class modes:
 
         else:
             raise ValueError(f"Unsupported mode basis: {basis}")
+
+    def modes_at_SLM_plane(self):
+        self.modes_SLM = fftshift(ifft2(fftshift(self.modes_array_all, axes = (1,2)), axes = (1,2)), axes = (1,2))
 
     def set_mode_basis(self, modes):
         self.modes_array_all = modes
